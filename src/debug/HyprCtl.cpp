@@ -654,7 +654,7 @@ static std::string layersRequest(eHyprCtlOutputFormat format, std::string reques
         for (auto const& mon : g_pCompositor->m_monitors) {
             result += std::format("Monitor {}:\n", mon->m_name);
             int                                     layerLevel = 0;
-            static const std::array<std::string, 4> levelNames = {"background", "bottom", "top", "overlay"};
+            static const std::array<std::string, 5> levelNames = {"background", "bottom", "top", "overlay", "middle"};
             for (auto const& level : mon->m_layerSurfaceLayers) {
                 result += std::format("\tLayer level {} ({}):\n", layerLevel, levelNames[layerLevel]);
 

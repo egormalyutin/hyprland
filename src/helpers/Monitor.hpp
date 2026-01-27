@@ -215,7 +215,7 @@ class CMonitor {
         CSignalT<> presented;
     } m_events;
 
-    std::array<std::vector<PHLLSREF>, 4> m_layerSurfaceLayers;
+    std::array<std::vector<PHLLSREF>, 5> m_layerSurfaceLayers;
 
     // keep in sync with HyprCtl
     enum eDSBlockReason : uint16_t {
