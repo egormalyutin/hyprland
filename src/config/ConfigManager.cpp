@@ -561,6 +561,7 @@ CConfigManager::CConfigManager() {
     registerConfigVar("debug:overlay", Hyprlang::INT{0});
     registerConfigVar("debug:damage_blink", Hyprlang::INT{0});
     registerConfigVar("debug:pass", Hyprlang::INT{0});
+    registerConfigVar("debug:gl_debugging", Hyprlang::INT{0});
     registerConfigVar("debug:disable_logs", Hyprlang::INT{1});
     registerConfigVar("debug:disable_time", Hyprlang::INT{1});
     registerConfigVar("debug:enable_stdout_logs", Hyprlang::INT{0});
@@ -790,6 +791,7 @@ CConfigManager::CConfigManager() {
     registerConfigVar("ecosystem:enforce_permissions", Hyprlang::INT{0});
 
     registerConfigVar("quirks:prefer_hdr", Hyprlang::INT{0});
+    registerConfigVar("quirks:skip_non_kms_dmabuf_formats", Hyprlang::INT{0});
 
     // devices
     m_config->addSpecialCategory("device", {"name"});

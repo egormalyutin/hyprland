@@ -1753,6 +1753,12 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .data        = SConfigOptionDescription::SBoolData{false},
     },
     SConfigOptionDescription{
+        .value       = "debug:gl_debugging",
+        .description = "enable OpenGL debugging and error checking, they hurt performance.",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{false},
+    },
+    SConfigOptionDescription{
         .value       = "debug:disable_logs",
         .description = "disable logging to a file",
         .type        = CONFIG_OPTION_BOOL,
@@ -2040,6 +2046,12 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .description = "Prefer HDR mode. 0 - off, 1 - always, 2 - gamescope only",
         .type        = CONFIG_OPTION_INT,
         .data        = SConfigOptionDescription::SRangeData{.value = 0, .min = 0, .max = 2},
+    },
+    SConfigOptionDescription{
+        .value       = "quirks:skip_non_kms_dmabuf_formats",
+        .description = "Do not report dmabuf formats which cannot be imported into KMS",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{true},
     },
 
 };
