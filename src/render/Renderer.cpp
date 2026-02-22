@@ -42,6 +42,7 @@
 #include "../protocols/types/ContentType.hpp"
 #include "../helpers/MiscFunctions.hpp"
 #include "render/OpenGL.hpp"
+#include "wlr-layer-shell-unstable-v1.hpp"
 
 #include <hyprutils/utils/ScopeGuard.hpp>
 using namespace Hyprutils::Utils;
@@ -378,7 +379,7 @@ void CHyprRenderer::renderWorkspaceWindowsFullscreen(PHLMONITOR pMonitor, PHLWOR
     }
 }
 
-void CHyprRenderer::renderWorkspaceWindows(PHLMONITOR pMonitor, PHLWORKSPACE pWorkspace, const Time::steady_tp& time) {
+void CHyprRenderer::renderWorkspaceWindows(PHLMONITOR pMonitor, PHLWORKSPACE pWorkspace, const Time::steady_tp& time, bool tiled, bool floating, bool popups) {
     PHLWINDOW lastWindow;
 
     EMIT_HOOK_EVENT("render", RENDER_PRE_WINDOWS);
@@ -397,32 +398,34 @@ void CHyprRenderer::renderWorkspaceWindows(PHLMONITOR pMonitor, PHLWORKSPACE pWo
     }
 
     // Non-floating main
-    for (auto& w : windows) {
-        if (w->m_isFloating)
-            continue; // floating are in the second pass
+    if (tiled) {
+        for (auto& w : windows) {
+            if (w->m_isFloating)
+                continue; // floating are in the second pass
 
-        // some things may force us to ignore the special/not special disparity
-        const bool IGNORE_SPECIAL_CHECK = w->m_monitorMovedFrom != -1 && (w->m_workspace && !w->m_workspace->isVisible());
+            // some things may force us to ignore the special/not special disparity
+            const bool IGNORE_SPECIAL_CHECK = w->m_monitorMovedFrom != -1 && (w->m_workspace && !w->m_workspace->isVisible());
 
-        if (!IGNORE_SPECIAL_CHECK && pWorkspace->m_isSpecialWorkspace != w->onSpecialWorkspace())
-            continue;
+            if (!IGNORE_SPECIAL_CHECK && pWorkspace->m_isSpecialWorkspace != w->onSpecialWorkspace())
+                continue;
 
-        // render active window after all others of this pass
-        if (w == Desktop::focusState()->window()) {
-            lastWindow = w.lock();
-            continue;
-        }
+            // render active window after all others of this pass
+            if (w == Desktop::focusState()->window()) {
+                lastWindow = w.lock();
+                continue;
+            }
 
-        // render tiled fading out after others
-        if (w->m_fadingOut) {
-            tiledFadingOut.emplace_back(w);
+            // render tiled fading out after others
+            if (w->m_fadingOut) {
+                tiledFadingOut.emplace_back(w);
+                w.reset();
+                continue;
+            }
+
+            // render the bad boy
+            renderWindow(w.lock(), pMonitor, time, true, RENDER_PASS_MAIN);
             w.reset();
-            continue;
         }
-
-        // render the bad boy
-        renderWindow(w.lock(), pMonitor, time, true, RENDER_PASS_MAIN);
-        w.reset();
     }
 
     if (lastWindow)
@@ -436,43 +439,47 @@ void CHyprRenderer::renderWorkspaceWindows(PHLMONITOR pMonitor, PHLWORKSPACE pWo
     }
 
     // Non-floating popup
-    for (auto& w : windows) {
-        if (!w)
-            continue;
+    if (popups) {
+        for (auto& w : windows) {
+            if (!w)
+                continue;
 
-        if (w->m_isFloating)
-            continue; // floating are in the second pass
+            if (w->m_isFloating)
+                continue; // floating are in the second pass
 
-        // some things may force us to ignore the special/not special disparity
-        const bool IGNORE_SPECIAL_CHECK = w->m_monitorMovedFrom != -1 && (w->m_workspace && !w->m_workspace->isVisible());
+            // some things may force us to ignore the special/not special disparity
+            const bool IGNORE_SPECIAL_CHECK = w->m_monitorMovedFrom != -1 && (w->m_workspace && !w->m_workspace->isVisible());
 
-        if (!IGNORE_SPECIAL_CHECK && pWorkspace->m_isSpecialWorkspace != w->onSpecialWorkspace())
-            continue;
+            if (!IGNORE_SPECIAL_CHECK && pWorkspace->m_isSpecialWorkspace != w->onSpecialWorkspace())
+                continue;
 
-        // render the bad boy
-        renderWindow(w.lock(), pMonitor, time, true, RENDER_PASS_POPUP);
-        w.reset();
+            // render the bad boy
+            renderWindow(w.lock(), pMonitor, time, true, RENDER_PASS_POPUP);
+            w.reset();
+        }
     }
 
     // floating on top
-    for (auto& w : windows) {
-        if (!w)
-            continue;
+    if (floating) {
+        for (auto& w : windows) {
+            if (!w)
+                continue;
 
-        if (!w->m_isFloating || w->m_pinned)
-            continue;
+            if (!w->m_isFloating || w->m_pinned)
+                continue;
 
-        // some things may force us to ignore the special/not special disparity
-        const bool IGNORE_SPECIAL_CHECK = w->m_monitorMovedFrom != -1 && (w->m_workspace && !w->m_workspace->isVisible());
+            // some things may force us to ignore the special/not special disparity
+            const bool IGNORE_SPECIAL_CHECK = w->m_monitorMovedFrom != -1 && (w->m_workspace && !w->m_workspace->isVisible());
 
-        if (!IGNORE_SPECIAL_CHECK && pWorkspace->m_isSpecialWorkspace != w->onSpecialWorkspace())
-            continue;
+            if (!IGNORE_SPECIAL_CHECK && pWorkspace->m_isSpecialWorkspace != w->onSpecialWorkspace())
+                continue;
 
-        if (pWorkspace->m_isSpecialWorkspace && w->m_monitor != pWorkspace->m_monitor)
-            continue; // special on another are rendered as a part of the base pass
+            if (pWorkspace->m_isSpecialWorkspace && w->m_monitor != pWorkspace->m_monitor)
+                continue; // special on another are rendered as a part of the base pass
 
-        // render the bad boy
-        renderWindow(w.lock(), pMonitor, time, true, RENDER_PASS_ALL);
+            // render the bad boy
+            renderWindow(w.lock(), pMonitor, time, true, RENDER_PASS_ALL);
+        }
     }
 }
 
@@ -947,6 +954,10 @@ void CHyprRenderer::renderAllClientsForWorkspace(PHLMONITOR pMonitor, PHLWORKSPA
             renderLayer(ls.lock(), pMonitor, time);
         }
 
+        for (auto const& ls : pMonitor->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_MIDDLE]) {
+            renderLayer(ls.lock(), pMonitor, time);
+        }
+
         for (auto const& ls : pMonitor->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_TOP]) {
             renderLayer(ls.lock(), pMonitor, time);
         }
@@ -977,8 +988,13 @@ void CHyprRenderer::renderAllClientsForWorkspace(PHLMONITOR pMonitor, PHLWORKSPA
 
     if UNLIKELY /* subjective? */ (pWorkspace->m_hasFullscreenWindow)
         renderWorkspaceWindowsFullscreen(pMonitor, pWorkspace, time);
-    else
-        renderWorkspaceWindows(pMonitor, pWorkspace, time);
+    else {
+        renderWorkspaceWindows(pMonitor, pWorkspace, time, true, false, false);
+        for (auto const& ls : pMonitor->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_MIDDLE]) {
+            renderLayer(ls.lock(), pMonitor, time);
+        }
+        renderWorkspaceWindows(pMonitor, pWorkspace, time, false, true, true);
+    }
 
     // and then special
     if UNLIKELY (pMonitor->m_specialFade->value() != 0.F) {
@@ -1011,8 +1027,13 @@ void CHyprRenderer::renderAllClientsForWorkspace(PHLMONITOR pMonitor, PHLWORKSPA
 
         if (ws->m_hasFullscreenWindow)
             renderWorkspaceWindowsFullscreen(pMonitor, ws.lock(), time);
-        else
-            renderWorkspaceWindows(pMonitor, ws.lock(), time);
+        else {
+            renderWorkspaceWindows(pMonitor, pWorkspace, time, true, false, false);
+            for (auto const& ls : pMonitor->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_MIDDLE]) {
+                renderLayer(ls.lock(), pMonitor, time);
+            }
+            renderWorkspaceWindows(pMonitor, pWorkspace, time, false, true, true);
+        }
     }
 
     // pinned always above

@@ -5,6 +5,7 @@
 #include "core/Compositor.hpp"
 #include "core/Output.hpp"
 #include "../helpers/Monitor.hpp"
+#include "wlr-layer-shell-unstable-v1.hpp"
 
 void CLayerShellResource::SState::reset() {
     anchor        = 0;
@@ -144,7 +145,7 @@ CLayerShellResource::CLayerShellResource(SP<CZwlrLayerSurfaceV1> resource_, SP<C
     });
 
     m_resource->setSetLayer([this](CZwlrLayerSurfaceV1* r, uint32_t layer) {
-        if (layer > ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY) {
+        if (layer > ZWLR_LAYER_SHELL_V1_LAYER_MIDDLE) {
             r->error(ZWLR_LAYER_SHELL_V1_ERROR_INVALID_LAYER, "Invalid layer");
             return;
         }
@@ -233,7 +234,7 @@ void CLayerShellProtocol::onGetLayerSurface(CZwlrLayerShellV1* pMgr, uint32_t id
         return;
     }
 
-    if UNLIKELY (layer > ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY) {
+    if UNLIKELY (layer > ZWLR_LAYER_SHELL_V1_LAYER_MIDDLE) {
         pMgr->error(ZWLR_LAYER_SHELL_V1_ERROR_INVALID_LAYER, "Invalid layer");
         return;
     }
