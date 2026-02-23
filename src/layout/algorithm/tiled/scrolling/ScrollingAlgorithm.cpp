@@ -390,16 +390,30 @@ void SScrollingData::fitCol(SP<SColumnData> c) {
         controller->fitStrip(colIdx, USABLE, *PFSONONE);
 }
 
+void SScrollingData::clampedCenterCol(SP<SColumnData> c) {
+    if (!c)
+        return;
+
+    static const auto PFSONONE = CConfigValue<Hyprlang::INT>("scrolling:fullscreen_on_one_column");
+    const auto        USABLE   = algorithm->usableArea();
+    int64_t           colIdx   = idx(c);
+
+    if (colIdx >= 0)
+        controller->clampedCenterStrip(colIdx, USABLE, *PFSONONE);
+}
+
 void SScrollingData::centerOrFitCol(SP<SColumnData> c) {
     if (!c)
         return;
 
     static const auto PFITMETHOD = CConfigValue<Hyprlang::INT>("scrolling:focus_fit_method");
 
-    if (*PFITMETHOD == 1)
+    if (*PFITMETHOD == 0)
+        centerCol(c);
+    else if (*PFITMETHOD == 1)
         fitCol(c);
     else
-        centerCol(c);
+        clampedCenterCol(c);
 }
 
 SP<SColumnData> SScrollingData::atCenter() {
@@ -557,11 +571,7 @@ void CScrollingAlgorithm::focusOnInput(SP<ITarget> target, bool hardInput) {
             return;
     }
 
-    static const auto PFITMETHOD = CConfigValue<Hyprlang::INT>("scrolling:focus_fit_method");
-    if (*PFITMETHOD == 1)
-        m_scrollingData->fitCol(TARGETDATA->column.lock());
-    else
-        m_scrollingData->centerCol(TARGETDATA->column.lock());
+    m_scrollingData->centerOrFitCol(TARGETDATA->column.lock());
     m_scrollingData->recalculate();
 }
 
@@ -884,13 +894,7 @@ void CScrollingAlgorithm::moveTargetTo(SP<ITarget> t, Math::eDirection dir, bool
 }
 
 std::expected<void, std::string> CScrollingAlgorithm::layoutMsg(const std::string_view& sv) {
-    auto centerOrFit = [this](const SP<SColumnData> COL) -> void {
-        static const auto PFITMETHOD = CConfigValue<Hyprlang::INT>("scrolling:focus_fit_method");
-        if (*PFITMETHOD == 1)
-            m_scrollingData->fitCol(COL);
-        else
-            m_scrollingData->centerCol(COL);
-    };
+    auto       centerOrFit = [this](const SP<SColumnData> COL) -> void { m_scrollingData->centerOrFitCol(COL); };
 
     const auto ARGS = CVarList(std::string{sv}, 0, ' ');
     if (ARGS[0] == "move") {
