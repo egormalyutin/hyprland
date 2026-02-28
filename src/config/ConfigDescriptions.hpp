@@ -2067,7 +2067,25 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .value       = "scrolling:focus_fit_method",
         .description = "When a column is focused, what method should be used to bring it into view",
         .type        = CONFIG_OPTION_CHOICE,
-        .data        = SConfigOptionDescription::SChoiceData{.firstIndex = 0, .choices = "center,fit,clamped_center"},
+        .data        = SConfigOptionDescription::SChoiceData{.firstIndex = 0, .choices = "center,fit"},
+    },
+    SConfigOptionDescription{
+        .value       = "scrolling:center_viewport",
+        .description = "",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{true},
+    },
+    SConfigOptionDescription{
+        .value       = "scrolling:center_allow_empty_space_before_tape",
+        .description = "???",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{true},
+    },
+    SConfigOptionDescription{
+        .value       = "scrolling:center_allow_empty_space_after_tape",
+        .description = "???",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{true},
     },
     SConfigOptionDescription{
         .value       = "scrolling:follow_focus",

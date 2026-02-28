@@ -15,6 +15,7 @@
 #include <hyprutils/string/VarList2.hpp>
 #include <hyprutils/string/ConstVarList.hpp>
 #include <hyprutils/utils/ScopeGuard.hpp>
+#include <print>
 
 using namespace Hyprutils::String;
 using namespace Hyprutils::Utils;
@@ -373,8 +374,12 @@ void SScrollingData::centerCol(SP<SColumnData> c) {
     const auto        USABLE   = algorithm->usableArea();
     int64_t           colIdx   = idx(c);
 
+    static const auto allowEmptyBefore = CConfigValue<Hyprlang::INT>("scrolling:center_allow_empty_space_before_tape");
+    static const auto allowEmptyAfter  = CConfigValue<Hyprlang::INT>("scrolling:center_allow_empty_space_after_tape");
+    static const auto centerViewport   = CConfigValue<Hyprlang::INT>("scrolling:center_viewport");
+
     if (colIdx >= 0)
-        controller->centerStrip(colIdx, USABLE, *PFSONONE);
+        controller->centerStrip(colIdx, USABLE, *PFSONONE, *allowEmptyBefore, *allowEmptyAfter, *centerViewport);
 }
 
 void SScrollingData::fitCol(SP<SColumnData> c) {
@@ -389,18 +394,6 @@ void SScrollingData::fitCol(SP<SColumnData> c) {
         controller->fitStrip(colIdx, USABLE, *PFSONONE);
 }
 
-void SScrollingData::clampedCenterCol(SP<SColumnData> c) {
-    if (!c)
-        return;
-
-    static const auto PFSONONE = CConfigValue<Hyprlang::INT>("scrolling:fullscreen_on_one_column");
-    const auto        USABLE   = algorithm->usableArea();
-    int64_t           colIdx   = idx(c);
-
-    if (colIdx >= 0)
-        controller->clampedCenterStrip(colIdx, USABLE, *PFSONONE);
-}
-
 void SScrollingData::centerOrFitCol(SP<SColumnData> c) {
     if (!c)
         return;
@@ -409,10 +402,8 @@ void SScrollingData::centerOrFitCol(SP<SColumnData> c) {
 
     if (*PFITMETHOD == 0)
         centerCol(c);
-    else if (*PFITMETHOD == 1)
-        fitCol(c);
     else
-        clampedCenterCol(c);
+        fitCol(c);
 }
 
 SP<SColumnData> SScrollingData::atCenter() {
@@ -625,6 +616,7 @@ void CScrollingAlgorithm::removeTarget(SP<ITarget> target) {
         // move the view if this is the last column
         const auto USABLE = usableArea();
         m_scrollingData->controller->adjustOffset(-(USABLE.w * DATA->column->getColumnWidth()));
+        // m_scrollingData->centerOrFitCol()
     }
 
     DATA->column->remove(target);
@@ -633,7 +625,9 @@ void CScrollingAlgorithm::removeTarget(SP<ITarget> target) {
         // column got removed, let's ensure we don't leave any cringe extra space
         const auto USABLE    = usableArea();
         double     newOffset = std::clamp(m_scrollingData->controller->getOffset(), 0.0, std::max(m_scrollingData->maxWidth() - USABLE.w, 1.0));
+        std::println("123");
         m_scrollingData->controller->setOffset(newOffset);
+        // m_scrollingData->m_scrollingData->
     }
 
     m_scrollingData->recalculate();

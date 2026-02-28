@@ -60,9 +60,9 @@ namespace Layout::Tiled {
         double            calculateCameraOffset(const CBox& usableArea, bool fullscreenOnOne = false);
         Vector2D          getCameraTranslation(const CBox& usableArea, bool fullscreenOnOne = false);
 
-        void              centerStrip(size_t stripIndex, const CBox& usableArea, bool fullscreenOnOne = false);
+        void              centerStrip(size_t stripIndex, const CBox& usableArea, bool fullscreenOnOne = false, bool allowEmptyBefore = false, bool allowEmptyAfter = false,
+                                      bool centerViewport = false);
         void              fitStrip(size_t stripIndex, const CBox& usableArea, bool fullscreenOnOne = false);
-        void              clampedCenterStrip(size_t stripIndex, const CBox& usableArea, bool fullscreenOnOne = false);
 
         bool              isStripVisible(size_t stripIndex, const CBox& usableArea, bool fullscreenOnOne = false) const;
 

@@ -2,6 +2,7 @@
 #include "ScrollingAlgorithm.hpp"
 #include <algorithm>
 #include <cmath>
+#include <print>
 
 using namespace Layout::Tiled;
 
@@ -196,16 +197,16 @@ double CScrollTapeController::calculateCameraOffset(const CBox& usableArea, bool
     const double usablePrimary = getPrimary(usableArea.size());
 
     // don't adjust the offset if we are dragging
-    if (isBeingDragged())
-        return m_offset;
+    // if (isBeingDragged())
+    //     return m_offset;
 
     // if the content fits in viewport, center it
-    if (maxExtent < usablePrimary)
-        m_offset = std::round((maxExtent - usablePrimary) / 2.0);
+    // if (maxExtent < usablePrimary)
+    //     m_offset = std::round((maxExtent - usablePrimary) / 2.0);
 
-    // if the offset is negative but we already extended, reset offset to 0
-    if (maxExtent > usablePrimary && m_offset < 0.0)
-        m_offset = 0.0;
+    // // if the offset is negative but we already extended, reset offset to 0
+    // if (maxExtent > usablePrimary && m_offset < 0.0)
+    //     m_offset = 0.0;
 
     return m_offset;
 }
@@ -219,15 +220,30 @@ Vector2D CScrollTapeController::getCameraTranslation(const CBox& usableArea, boo
         return makeVector(-offset, 0.0);
 }
 
-void CScrollTapeController::centerStrip(size_t stripIndex, const CBox& usableArea, bool fullscreenOnOne) {
+void CScrollTapeController::centerStrip(size_t stripIndex, const CBox& usableArea, bool fullscreenOnOne, bool allowEmptyBefore, bool allowEmptyAfter, bool centerViewport) {
+    // std::println("calling centerStrip");
     if (stripIndex >= m_strips.size())
         return;
+    // std::println("calling centerStrip2");
 
     const double usablePrimary = getPrimary(usableArea.size());
-    const double stripStart    = calculateStripStart(stripIndex, usableArea, fullscreenOnOne);
-    const double stripSize     = calculateStripSize(stripIndex, usableArea, fullscreenOnOne);
+    const double maxExtent     = calculateMaxExtent(usableArea, fullscreenOnOne);
+
+    if (centerViewport && maxExtent < usablePrimary) {
+        m_offset = std::round((maxExtent - usablePrimary) / 2.0);
+        return;
+    }
+
+    const double stripStart = calculateStripStart(stripIndex, usableArea, fullscreenOnOne);
+    const double stripSize  = calculateStripSize(stripIndex, usableArea, fullscreenOnOne);
 
     m_offset = stripStart - (usablePrimary - stripSize) / 2.0;
+
+    if (!allowEmptyAfter)
+        m_offset = std::min(m_offset, maxExtent - usablePrimary);
+
+    if (!allowEmptyBefore && m_offset < 0.)
+        m_offset = 0.;
 }
 
 void CScrollTapeController::fitStrip(size_t stripIndex, const CBox& usableArea, bool fullscreenOnOne) {
@@ -237,24 +253,14 @@ void CScrollTapeController::fitStrip(size_t stripIndex, const CBox& usableArea, 
     const double usablePrimary = getPrimary(usableArea.size());
     const double stripStart    = calculateStripStart(stripIndex, usableArea, fullscreenOnOne);
     const double stripSize     = calculateStripSize(stripIndex, usableArea, fullscreenOnOne);
+    const double maxExtent     = calculateMaxExtent(usableArea, fullscreenOnOne);
+
+    if (maxExtent < usablePrimary) {
+        m_offset = std::round((maxExtent - usablePrimary) / 2.0);
+        return;
+    }
 
     m_offset = std::clamp(m_offset, stripStart - usablePrimary + stripSize, stripStart);
-}
-
-void CScrollTapeController::clampedCenterStrip(size_t stripIndex, const CBox& usableArea, bool fullscreenOnOne) {
-    if (stripIndex >= m_strips.size())
-        return;
-
-    const double usablePrimary = getPrimary(usableArea.size());
-    const double stripStart    = calculateStripStart(stripIndex, usableArea, fullscreenOnOne);
-    const double stripSize     = calculateStripSize(stripIndex, usableArea, fullscreenOnOne);
-
-    const double maxExtent = calculateMaxExtent(usableArea, fullscreenOnOne);
-    const double limit     = std::max(0., maxExtent - usablePrimary);
-
-    const double center = stripStart - (usablePrimary - stripSize) / 2.0;
-
-    m_offset = std::clamp(center, 0., limit);
 }
 
 bool CScrollTapeController::isStripVisible(size_t stripIndex, const CBox& usableArea, bool fullscreenOnOne) const {
