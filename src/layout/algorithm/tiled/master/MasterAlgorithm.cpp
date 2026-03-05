@@ -403,7 +403,9 @@ void CMasterAlgorithm::swapTargets(SP<ITarget> a, SP<ITarget> b) {
 }
 
 void CMasterAlgorithm::moveTargetInDirection(SP<ITarget> t, Math::eDirection dir, bool silent) {
-    const auto PWINDOW2 = g_pCompositor->getWindowInDirection(t->window(), dir);
+    static auto PMONITORFALLBACK = CConfigValue<Hyprlang::INT>("binds:window_direction_monitor_fallback");
+
+    const auto  PWINDOW2 = g_pCompositor->getWindowInDirection(t->window(), dir);
 
     if (!t->window())
         return;
@@ -424,7 +426,10 @@ void CMasterAlgorithm::moveTargetInDirection(SP<ITarget> t, Math::eDirection dir
     t->window()->setAnimationsToMove();
 
     if (t->window()->m_workspace != targetWs) {
-        t->assignToSpace(targetWs->m_space);
+        if (!*PMONITORFALLBACK)
+            return; // noop
+
+        t->assignToSpace(targetWs->m_space, focalPointForDir(t, dir));
     } else if (PWINDOW2) {
         // if same monitor, switch windows
         g_layoutManager->switchTargets(t, PWINDOW2->layoutTarget());
@@ -668,15 +673,15 @@ std::expected<void, std::string> CMasterAlgorithm::layoutMsg(const std::string_v
         g_pCompositor->setWindowFullscreenInternal(PWINDOW, FSMODE_NONE);
 
         if (command == "orientationleft")
-            m_workspaceData.orientation = ORIENTATION_LEFT;
+            m_workspaceData.explicitOrientation = ORIENTATION_LEFT;
         else if (command == "orientationright")
-            m_workspaceData.orientation = ORIENTATION_RIGHT;
+            m_workspaceData.explicitOrientation = ORIENTATION_RIGHT;
         else if (command == "orientationtop")
-            m_workspaceData.orientation = ORIENTATION_TOP;
+            m_workspaceData.explicitOrientation = ORIENTATION_TOP;
         else if (command == "orientationbottom")
-            m_workspaceData.orientation = ORIENTATION_BOTTOM;
+            m_workspaceData.explicitOrientation = ORIENTATION_BOTTOM;
         else if (command == "orientationcenter")
-            m_workspaceData.orientation = ORIENTATION_CENTER;
+            m_workspaceData.explicitOrientation = ORIENTATION_CENTER;
 
         calculateWorkspace();
     } else if (command == "orientationnext") {
@@ -720,8 +725,8 @@ std::expected<void, std::string> CMasterAlgorithm::layoutMsg(const std::string_v
 
         for (auto& nd : m_masterNodesData) {
             if (!nd->isMaster) {
-                const auto newMaster = nd;
-                newMaster->isMaster  = true;
+                const auto& newMaster = nd;
+                newMaster->isMaster   = true;
 
                 auto newMasterIt = std::ranges::find(m_masterNodesData, newMaster);
 
@@ -756,8 +761,8 @@ std::expected<void, std::string> CMasterAlgorithm::layoutMsg(const std::string_v
 
         for (auto& nd : m_masterNodesData | std::views::reverse) {
             if (!nd->isMaster) {
-                const auto newMaster = nd;
-                newMaster->isMaster  = true;
+                const auto& newMaster = nd;
+                newMaster->isMaster   = true;
 
                 auto newMasterIt = std::ranges::find(m_masterNodesData, newMaster);
 
@@ -837,6 +842,34 @@ void CMasterAlgorithm::buildOrientationCycleVectorFromEOperation(std::vector<eOr
     }
 }
 
+eOrientation CMasterAlgorithm::defaultOrientation() {
+    static auto PORIENT = CConfigValue<std::string>("master:orientation");
+
+    const auto  WORKSPACERULE = g_pConfigManager->getWorkspaceRuleFor(m_parent->space()->workspace());
+    std::string orientationString;
+    if (WORKSPACERULE.layoutopts.contains("orientation"))
+        orientationString = WORKSPACERULE.layoutopts.at("orientation");
+    else
+        orientationString = *PORIENT;
+
+    eOrientation orientation = ORIENTATION_LEFT;
+    // override if workspace rule is set
+    if (!orientationString.empty()) {
+        if (orientationString == "top")
+            orientation = ORIENTATION_TOP;
+        else if (orientationString == "right")
+            orientation = ORIENTATION_RIGHT;
+        else if (orientationString == "bottom")
+            orientation = ORIENTATION_BOTTOM;
+        else if (orientationString == "center")
+            orientation = ORIENTATION_CENTER;
+        else
+            orientation = ORIENTATION_LEFT;
+    }
+
+    return orientation;
+}
+
 void CMasterAlgorithm::runOrientationCycle(Hyprutils::String::CVarList2* vars, int next) {
     std::vector<eOrientation> cycle;
     if (vars != nullptr)
@@ -854,7 +887,7 @@ void CMasterAlgorithm::runOrientationCycle(Hyprutils::String::CVarList2* vars, i
 
     int nextOrPrev = 0;
     for (size_t i = 0; i < cycle.size(); ++i) {
-        if (m_workspaceData.orientation == cycle[i]) {
+        if (m_workspaceData.explicitOrientation.value_or(defaultOrientation()) == cycle[i]) {
             nextOrPrev = i + next;
             break;
         }
@@ -865,32 +898,12 @@ void CMasterAlgorithm::runOrientationCycle(Hyprutils::String::CVarList2* vars, i
     else if (nextOrPrev < 0)
         nextOrPrev = cycle.size() + (nextOrPrev % sc<int>(cycle.size()));
 
-    m_workspaceData.orientation = cycle.at(nextOrPrev);
+    m_workspaceData.explicitOrientation = cycle.at(nextOrPrev);
     calculateWorkspace();
 }
 
 eOrientation CMasterAlgorithm::getDynamicOrientation() {
-    const auto  WORKSPACERULE = g_pConfigManager->getWorkspaceRuleFor(m_parent->space()->workspace());
-    std::string orientationString;
-    if (WORKSPACERULE.layoutopts.contains("orientation"))
-        orientationString = WORKSPACERULE.layoutopts.at("orientation");
-
-    eOrientation orientation = m_workspaceData.orientation;
-    // override if workspace rule is set
-    if (!orientationString.empty()) {
-        if (orientationString == "top")
-            orientation = ORIENTATION_TOP;
-        else if (orientationString == "right")
-            orientation = ORIENTATION_RIGHT;
-        else if (orientationString == "bottom")
-            orientation = ORIENTATION_BOTTOM;
-        else if (orientationString == "center")
-            orientation = ORIENTATION_CENTER;
-        else
-            orientation = ORIENTATION_LEFT;
-    }
-
-    return orientation;
+    return m_workspaceData.explicitOrientation.value_or(defaultOrientation());
 }
 
 int CMasterAlgorithm::getNodesNo() {
@@ -948,7 +961,9 @@ void CMasterAlgorithm::calculateWorkspace() {
     const auto                    STACKWINDOWS     = WINDOWS - MASTERS;
     const auto                    WORKAREA         = m_parent->space()->workArea();
     const auto                    PMONITOR         = m_parent->space()->workspace()->m_monitor;
-    const auto                    UNRESERVED_WIDTH = WORKAREA.width + PMONITOR->m_reservedArea.left() + PMONITOR->m_reservedArea.right();
+    const auto                    reservedLeft     = PMONITOR ? PMONITOR->m_reservedArea.left() : 0;
+    const auto                    reservedRight    = PMONITOR ? PMONITOR->m_reservedArea.right() : 0;
+    const auto                    UNRESERVED_WIDTH = WORKAREA.width + reservedLeft + reservedRight;
 
     if (orientation == ORIENTATION_CENTER) {
         if (STACKWINDOWS >= *SLAVECOUNTFORCENTER)
@@ -1066,7 +1081,7 @@ void CMasterAlgorithm::calculateWorkspace() {
             }
 
             nd->size     = Vector2D(WIDTH, HEIGHT);
-            nd->position = (*PIGNORERESERVED && centerMasterWindow ? WORKAREA.pos() - Vector2D(PMONITOR->m_reservedArea.left(), 0.0) : WORKAREA.pos()) + Vector2D(nextX, nextY);
+            nd->position = (*PIGNORERESERVED && centerMasterWindow ? WORKAREA.pos() - Vector2D(reservedLeft, 0.0) : WORKAREA.pos()) + Vector2D(nextX, nextY);
             nd->pTarget->setPositionGlobal({nd->position, nd->size});
 
             mastersLeft--;
@@ -1184,7 +1199,7 @@ void CMasterAlgorithm::calculateWorkspace() {
                 continue;
 
             if (onRight) {
-                nextX      = WIDTH + PMASTERNODE->size.x - (*PIGNORERESERVED ? PMONITOR->m_reservedArea.left() : 0);
+                nextX      = WIDTH + PMASTERNODE->size.x - (*PIGNORERESERVED ? reservedLeft : 0);
                 nextY      = nextYR;
                 heightLeft = heightLeftR;
                 slavesLeft = slavesLeftR;
@@ -1209,7 +1224,7 @@ void CMasterAlgorithm::calculateWorkspace() {
                 }
             }
 
-            nd->size     = Vector2D(*PIGNORERESERVED ? (WIDTH - (onRight ? PMONITOR->m_reservedArea.right() : PMONITOR->m_reservedArea.left())) : WIDTH, HEIGHT);
+            nd->size     = Vector2D(*PIGNORERESERVED ? (WIDTH - (onRight ? reservedRight : reservedLeft)) : WIDTH, HEIGHT);
             nd->position = WORKAREA.pos() + Vector2D(nextX, nextY);
             nd->pTarget->setPositionGlobal({nd->position, nd->size});
 

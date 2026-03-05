@@ -88,7 +88,9 @@ void CDefaultFloatingAlgorithm::newTarget(SP<ITarget> target) {
     if (!posOverridden && (!DESIRED_GEOM || !DESIRED_GEOM->pos))
         windowGeometry = CBox{WORK_AREA.middle() - windowGeometry.size() / 2.F, windowGeometry.size()};
 
-    if (posOverridden || WORK_AREA.containsPoint(windowGeometry.middle()))
+    if (posOverridden                                                                           // pos is overridden by a rule
+        || (DESIRED_GEOM && DESIRED_GEOM->pos && target->window() && target->window()->m_isX11) // X11 window with a geom
+        || WORK_AREA.containsPoint(windowGeometry.middle()))                                    // geometry within work area
         target->setPositionGlobal(windowGeometry);
     else {
         const auto POS   = WORK_AREA.middle() - windowGeometry.size() / 2.f;
@@ -100,13 +102,7 @@ void CDefaultFloatingAlgorithm::newTarget(SP<ITarget> target) {
 
     // TODO: not very OOP, is it?
     if (const auto WTARGET = dynamicPointerCast<CWindowTarget>(target); WTARGET) {
-        static auto PXWLFORCESCALEZERO = CConfigValue<Hyprlang::INT>("xwayland:force_zero_scaling");
-
-        const auto  PWINDOW  = WTARGET->window();
-        const auto  PMONITOR = WTARGET->space()->workspace()->m_monitor.lock();
-
-        if (*PXWLFORCESCALEZERO && PWINDOW->m_isX11)
-            *PWINDOW->m_realSize = PWINDOW->m_realSize->goal() / PMONITOR->m_scale;
+        const auto PWINDOW = WTARGET->window();
 
         if (PWINDOW->m_X11DoesntWantBorders || (PWINDOW->m_isX11 && PWINDOW->isX11OverrideRedirect())) {
             PWINDOW->m_realPosition->warp();
@@ -120,6 +116,8 @@ void CDefaultFloatingAlgorithm::newTarget(SP<ITarget> target) {
             PWINDOW->m_reportedSize        = PWINDOW->m_pendingReportedSize;
         }
     }
+
+    updateTarget(target);
 }
 
 void CDefaultFloatingAlgorithm::movedTarget(SP<ITarget> target, std::optional<Vector2D> focalPoint) {
@@ -156,6 +154,8 @@ void CDefaultFloatingAlgorithm::movedTarget(SP<ITarget> target, std::optional<Ve
         // put around the current center, fit in workArea
         target->setPositionGlobal(fitBoxInWorkArea(CBox{NEW_POS, LAST_SIZE}, target));
     }
+
+    updateTarget(target);
 }
 
 CBox CDefaultFloatingAlgorithm::fitBoxInWorkArea(const CBox& box, SP<ITarget> t) {
@@ -177,6 +177,7 @@ CBox CDefaultFloatingAlgorithm::fitBoxInWorkArea(const CBox& box, SP<ITarget> t)
 
 void CDefaultFloatingAlgorithm::removeTarget(SP<ITarget> target) {
     target->rememberFloatingSize(target->position().size());
+    m_datas.erase(target);
 }
 
 void CDefaultFloatingAlgorithm::resizeTarget(const Vector2D& Δ, SP<ITarget> target, eRectCorner corner) {
@@ -188,6 +189,8 @@ void CDefaultFloatingAlgorithm::resizeTarget(const Vector2D& Δ, SP<ITarget> tar
 
     if (g_layoutManager->dragController()->target() == target)
         target->warpPositionSize();
+
+    updateTarget(target);
 }
 
 void CDefaultFloatingAlgorithm::moveTarget(const Vector2D& Δ, SP<ITarget> target) {
@@ -197,12 +200,17 @@ void CDefaultFloatingAlgorithm::moveTarget(const Vector2D& Δ, SP<ITarget> targe
 
     if (g_layoutManager->dragController()->target() == target)
         target->warpPositionSize();
+
+    updateTarget(target);
 }
 
 void CDefaultFloatingAlgorithm::swapTargets(SP<ITarget> a, SP<ITarget> b) {
     auto posABackup = a->position();
     a->setPositionGlobal(b->position());
     b->setPositionGlobal(posABackup);
+
+    updateTarget(a);
+    updateTarget(b);
 }
 
 void CDefaultFloatingAlgorithm::moveTargetInDirection(SP<ITarget> t, Math::eDirection dir, bool silent) {
@@ -220,4 +228,25 @@ void CDefaultFloatingAlgorithm::moveTargetInDirection(SP<ITarget> t, Math::eDire
     }
 
     t->setPositionGlobal(pos);
+
+    updateTarget(t);
+}
+
+void CDefaultFloatingAlgorithm::recenter(SP<ITarget> t) {
+    if (!m_datas.contains(t)) {
+        IFloatingAlgorithm::recenter(t);
+        return;
+    }
+
+    t->setPositionGlobal(m_datas.at(t).lastBox);
+}
+
+void CDefaultFloatingAlgorithm::setTargetGeom(const CBox& geom, SP<ITarget> target) {
+    target->setPositionGlobal(geom);
+
+    updateTarget(target);
+}
+
+void CDefaultFloatingAlgorithm::updateTarget(SP<ITarget> t) {
+    m_datas[t] = {.lastBox = t->position()};
 }

@@ -11,13 +11,14 @@
 #include "eventLoop/EventLoopManager.hpp"
 #include "../render/pass/TexPassElement.hpp"
 #include "../managers/input/InputManager.hpp"
-#include "../managers/HookSystemManager.hpp"
 #include "../render/Renderer.hpp"
 #include "../render/OpenGL.hpp"
 #include "../desktop/state/FocusState.hpp"
 #include "SeatManager.hpp"
 #include "../helpers/time/Time.hpp"
 #include "../helpers/Drm.hpp"
+#include "../event/EventBus.hpp"
+#include <climits>
 #include <cstring>
 #include <gbm.h>
 #include <cairo/cairo.h>
@@ -26,21 +27,19 @@
 using namespace Hyprutils::Utils;
 
 CPointerManager::CPointerManager() {
-    m_hooks.monitorAdded = g_pHookSystem->hookDynamic("monitorAdded", [this](void* self, SCallbackInfo& info, std::any data) {
-        auto PMONITOR = std::any_cast<PHLMONITOR>(data);
-
+    m_hooks.monitorAdded = Event::bus()->m_events.monitor.added.listen([this](PHLMONITOR monitor) {
         onMonitorLayoutChange();
 
-        PMONITOR->m_events.modeChanged.listenStatic([this] { g_pEventLoopManager->doLater([this]() { onMonitorLayoutChange(); }); });
-        PMONITOR->m_events.disconnect.listenStatic([this] { g_pEventLoopManager->doLater([this]() { onMonitorLayoutChange(); }); });
-        PMONITOR->m_events.destroy.listenStatic([this] {
+        monitor->m_events.modeChanged.listenStatic([this] { g_pEventLoopManager->doLater([this]() { onMonitorLayoutChange(); }); });
+        monitor->m_events.disconnect.listenStatic([this] { g_pEventLoopManager->doLater([this]() { onMonitorLayoutChange(); }); });
+        monitor->m_events.destroy.listenStatic([this] {
             if (g_pCompositor && !g_pCompositor->m_isShuttingDown)
                 std::erase_if(m_monitorStates, [](const auto& other) { return other->monitor.expired(); });
         });
     });
 
-    m_hooks.monitorPreRender = g_pHookSystem->hookDynamic("preMonitorCommit", [this](void* self, SCallbackInfo& info, std::any data) {
-        auto state = stateFor(std::any_cast<PHLMONITOR>(data));
+    m_hooks.monitorPreRender = Event::bus()->m_events.monitor.preCommit.listen([this](PHLMONITOR monitor) {
+        auto state = stateFor(monitor);
         if (!state)
             return;
 
@@ -541,24 +540,23 @@ SP<Aquamarine::IBuffer> CPointerManager::renderHWCursorBuffer(SP<CPointerManager
 
         // we need to scale the cursor to the right size, because it might not be (esp with XCursor)
         const auto SCALE = texture->m_size / (m_currentCursorImage.size / m_currentCursorImage.scale * state->monitor->m_scale);
-        cairo_matrix_scale(&matrixPre, SCALE.x, SCALE.y);
+        const auto SX = SCALE.x, SY = SCALE.y;
+        const auto BW = sc<double>(DMABUF.size.x), BH = sc<double>(DMABUF.size.y);
 
-        if (TR) {
-            cairo_matrix_rotate(&matrixPre, M_PI_2 * sc<double>(TR));
-
-            // FIXME: this is wrong, and doesn't work for 5, 6 and 7. (flipped + rot)
-            // cba to do it rn, does anyone fucking use that??
-            if (TR >= WL_OUTPUT_TRANSFORM_FLIPPED) {
-                cairo_matrix_scale(&matrixPre, -1, 1);
-                cairo_matrix_translate(&matrixPre, -DMABUF.size.x, 0);
-            }
-
-            if (TR == 3 || TR == 7)
-                cairo_matrix_translate(&matrixPre, -DMABUF.size.x, 0);
-            else if (TR == 2 || TR == 6)
-                cairo_matrix_translate(&matrixPre, -DMABUF.size.x, -DMABUF.size.y);
-            else if (TR == 1 || TR == 5)
-                cairo_matrix_translate(&matrixPre, 0, -DMABUF.size.y);
+        // Cairo pattern matrix maps destination coords to source coords (inverse of visual transform).
+        // x_src = xx * x_dst + xy * y_dst + x0
+        // y_src = yx * x_dst + yy * y_dst + y0
+        // cairo_matrix_init(&m, xx, yx, xy, yy, x0, y0)
+        switch (TR) {
+            case WL_OUTPUT_TRANSFORM_NORMAL:
+            default: cairo_matrix_init(&matrixPre, SX, 0, 0, SY, 0, 0); break;
+            case WL_OUTPUT_TRANSFORM_90: cairo_matrix_init(&matrixPre, 0, SY, -SX, 0, SX * BW, 0); break;
+            case WL_OUTPUT_TRANSFORM_180: cairo_matrix_init(&matrixPre, -SX, 0, 0, -SY, SX * BW, SY * BH); break;
+            case WL_OUTPUT_TRANSFORM_270: cairo_matrix_init(&matrixPre, 0, -SY, SX, 0, 0, SY * BH); break;
+            case WL_OUTPUT_TRANSFORM_FLIPPED: cairo_matrix_init(&matrixPre, -SX, 0, 0, SY, SX * BW, 0); break;
+            case WL_OUTPUT_TRANSFORM_FLIPPED_90: cairo_matrix_init(&matrixPre, 0, SY, SX, 0, 0, 0); break;
+            case WL_OUTPUT_TRANSFORM_FLIPPED_180: cairo_matrix_init(&matrixPre, SX, 0, 0, -SY, 0, SY * BH); break;
+            case WL_OUTPUT_TRANSFORM_FLIPPED_270: cairo_matrix_init(&matrixPre, 0, -SY, -SX, 0, SX * BW, SY * BH); break;
         }
 
         cairo_pattern_set_matrix(PATTERNPRE, &matrixPre);
@@ -591,15 +589,14 @@ SP<Aquamarine::IBuffer> CPointerManager::renderHWCursorBuffer(SP<CPointerManager
 
     RBO->bind();
 
-    const auto& damageSize = state->monitor->m_output->cursorPlaneSize();
-    g_pHyprOpenGL->beginSimple(state->monitor.lock(), {0, 0, damageSize.x, damageSize.y}, RBO);
+    g_pHyprOpenGL->beginSimple(state->monitor.lock(), {0, 0, INT_MAX, INT_MAX}, RBO);
     g_pHyprOpenGL->clear(CHyprColor{0.F, 0.F, 0.F, 0.F}); // ensure the RBO is zero initialized.
 
     CBox xbox = {{}, Vector2D{m_currentCursorImage.size / m_currentCursorImage.scale * state->monitor->m_scale}.round()};
     Log::logger->log(Log::TRACE, "[pointer] monitor: {}, size: {}, hw buf: {}, scale: {:.2f}, monscale: {:.2f}, xbox: {}", state->monitor->m_name, m_currentCursorImage.size,
                      cursorSize, m_currentCursorImage.scale, state->monitor->m_scale, xbox.size());
 
-    g_pHyprOpenGL->renderTexture(texture, xbox, {});
+    g_pHyprOpenGL->renderTexture(texture, xbox, {.noCM = true});
 
     g_pHyprOpenGL->end();
     g_pHyprOpenGL->m_renderData.pMonitor.reset();

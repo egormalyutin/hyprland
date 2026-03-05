@@ -45,12 +45,12 @@ namespace Layout::Tiled {
         SP<SDwindleNodeData>    getNodeFromWindow(PHLWINDOW w);
         int                     getNodes();
         SP<SDwindleNodeData>    getFirstNode();
-        SP<SDwindleNodeData>    getClosestNode(const Vector2D&);
+        SP<SDwindleNodeData>    getClosestNode(const Vector2D&, SP<ITarget> skip = nullptr);
         SP<SDwindleNodeData>    getMasterNode();
 
-        void                    toggleSplit(SP<SDwindleNodeData>);
-        void                    swapSplit(SP<SDwindleNodeData>);
-        void                    moveToRoot(SP<SDwindleNodeData>, bool stable = true);
+        bool                    toggleSplit(SP<SDwindleNodeData>);
+        bool                    swapSplit(SP<SDwindleNodeData>);
+        bool                    moveToRoot(SP<SDwindleNodeData>, bool stable = true);
 
         Math::eDirection        m_overrideDirection = Math::DIRECTION_DEFAULT;
     };

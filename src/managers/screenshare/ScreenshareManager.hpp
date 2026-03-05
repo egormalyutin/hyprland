@@ -206,9 +206,8 @@ namespace Screenshare {
 
         UP<CCursorshareSession> newCursorSession(wl_client* client, WP<CWLPointerResource> pointer);
 
-        void                    destroyClientSessions(wl_client* client);
-
         void                    onOutputCommit(PHLMONITOR monitor);
+        bool                    isOutputBeingSSd(PHLMONITOR monitor);
 
       private:
         std::vector<WP<CScreenshareSession>> m_sessions;

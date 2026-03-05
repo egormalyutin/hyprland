@@ -16,7 +16,6 @@
 #include "TokenManager.hpp"
 #include "eventLoop/EventLoopManager.hpp"
 #include "debug/log/Logger.hpp"
-#include "../managers/HookSystemManager.hpp"
 #include "../managers/input/InputManager.hpp"
 #include "../managers/animation/DesktopAnimationManager.hpp"
 #include "../managers/EventManager.hpp"
@@ -32,6 +31,7 @@
 #include "../layout/algorithm/Algorithm.hpp"
 #include "../layout/algorithm/tiled/master/MasterAlgorithm.hpp"
 #include "../layout/algorithm/tiled/monocle/MonocleAlgorithm.hpp"
+#include "../event/EventBus.hpp"
 
 #include <optional>
 #include <iterator>
@@ -203,8 +203,7 @@ CKeybindManager::CKeybindManager() {
         g_pEventLoopManager->addTimer(m_repeatKeyTimer);
     }
 
-    static auto P = g_pHookSystem->hookDynamic("configReloaded", [this](void* hk, SCallbackInfo& info, std::any param) {
-        // clear cuz realloc'd
+    static auto P = Event::bus()->m_events.config.reloaded.listen([this] {
         m_activeKeybinds.clear();
         m_lastLongPressKeybind.reset();
         m_pressedSpecialBinds.clear();
@@ -916,11 +915,13 @@ bool CKeybindManager::handleInternalKeybinds(xkb_keysym_t keysym) {
 
 // Dispatchers
 SDispatchResult CKeybindManager::spawn(std::string args) {
-    const uint64_t PROC = spawnWithRules(args, nullptr);
-    return {.success = PROC > 0, .error = std::format("Failed to start process {}", args)};
+    const auto PROC = spawnWithRules(args, nullptr);
+    if (!PROC.has_value())
+        return {.success = false, .error = std::format("Failed to start process. No closing bracket in exec rule. {}", args)};
+    return {.success = PROC.value() > 0, .error = std::format("Failed to start process {}", args)};
 }
 
-uint64_t CKeybindManager::spawnWithRules(std::string args, PHLWORKSPACE pInitialWorkspace) {
+std::optional<uint64_t> CKeybindManager::spawnWithRules(std::string args, PHLWORKSPACE pInitialWorkspace) {
 
     args = trim(args);
 
@@ -928,22 +929,29 @@ uint64_t CKeybindManager::spawnWithRules(std::string args, PHLWORKSPACE pInitial
 
     if (args[0] == '[') {
         // we have exec rules
-        RULES = args.substr(1, args.substr(1).find_first_of(']'));
-        args  = args.substr(args.find_first_of(']') + 1);
+        const auto end = args.find_first_of(']');
+        if (end == std::string::npos)
+            return std::nullopt;
+
+        RULES = args.substr(1, end - 1);
+        args  = args.substr(end + 1);
     }
 
     std::string execToken = "";
 
     if (!RULES.empty()) {
-        auto rule = Desktop::Rule::CWindowRule::buildFromExecString(std::move(RULES));
+        auto           rule = Desktop::Rule::CWindowRule::buildFromExecString(std::move(RULES));
 
-        execToken = rule->execToken();
+        const auto     TOKEN = g_pTokenManager->registerNewToken(nullptr, std::chrono::seconds(1));
 
+        const uint64_t PROC = spawnRawProc(args, pInitialWorkspace, TOKEN);
+        rule->markAsExecRule(TOKEN, PROC, false /* TODO: could be nice. */);
+        rule->registerMatch(Desktop::Rule::RULE_PROP_EXEC_TOKEN, TOKEN);
+        rule->registerMatch(Desktop::Rule::RULE_PROP_EXEC_PID, std::to_string(PROC));
         Desktop::Rule::ruleEngine()->registerRule(std::move(rule));
-
         Log::logger->log(Log::DEBUG, "Applied rule arguments for exec.");
+        return PROC;
     }
-
     const uint64_t PROC = spawnRawProc(args, pInitialWorkspace, execToken);
 
     return PROC;
@@ -1460,9 +1468,10 @@ SDispatchResult CKeybindManager::moveActiveToWorkspaceSilent(std::string args) {
 }
 
 SDispatchResult CKeybindManager::moveFocusTo(std::string args) {
-    static auto      PFULLCYCLE  = CConfigValue<Hyprlang::INT>("binds:movefocus_cycles_fullscreen");
-    static auto      PGROUPCYCLE = CConfigValue<Hyprlang::INT>("binds:movefocus_cycles_groupfirst");
-    Math::eDirection dir         = Math::fromChar(args[0]);
+    static auto      PFULLCYCLE       = CConfigValue<Hyprlang::INT>("binds:movefocus_cycles_fullscreen");
+    static auto      PGROUPCYCLE      = CConfigValue<Hyprlang::INT>("binds:movefocus_cycles_groupfirst");
+    static auto      PMONITORFALLBACK = CConfigValue<Hyprlang::INT>("binds:window_direction_monitor_fallback");
+    Math::eDirection dir              = Math::fromChar(args[0]);
 
     if (dir == Math::DIRECTION_DEFAULT) {
         Log::logger->log(Log::ERR, "Cannot move focus in direction {}, unsupported direction. Supported: l,r,u/t,d/b", args[0]);
@@ -1471,7 +1480,8 @@ SDispatchResult CKeybindManager::moveFocusTo(std::string args) {
 
     const auto PLASTWINDOW = Desktop::focusState()->window();
     if (!PLASTWINDOW || !PLASTWINDOW->aliveAndVisible()) {
-        tryMoveFocusToMonitor(g_pCompositor->getMonitorInDirection(dir));
+        if (*PMONITORFALLBACK)
+            tryMoveFocusToMonitor(g_pCompositor->getMonitorInDirection(dir));
         return {};
     }
 
@@ -1501,7 +1511,7 @@ SDispatchResult CKeybindManager::moveFocusTo(std::string args) {
 
     Log::logger->log(Log::DEBUG, "No window found in direction {}, looking for a monitor", Math::toString(dir));
 
-    if (tryMoveFocusToMonitor(g_pCompositor->getMonitorInDirection(dir)))
+    if (*PMONITORFALLBACK && tryMoveFocusToMonitor(g_pCompositor->getMonitorInDirection(dir)))
         return {};
 
     static auto PNOFALLBACK = CConfigValue<Hyprlang::INT>("general:no_focus_fallback");
@@ -1682,7 +1692,10 @@ SDispatchResult CKeybindManager::changeGroupActive(std::string args) {
         // index starts from '1'; '0' means last window
         try {
             const int INDEX = std::stoi(args);
-            PWINDOW->m_group->setCurrent(INDEX);
+            if (INDEX <= 0)
+                PWINDOW->m_group->setCurrent(PWINDOW->m_group->size() - 1);
+            else
+                PWINDOW->m_group->setCurrent(INDEX - 1);
         } catch (...) { return {.success = false, .error = "invalid idx"}; }
 
         return {};
@@ -2215,7 +2228,7 @@ SDispatchResult CKeybindManager::setSubmap(std::string submap) {
         m_currentSelectedSubmap.name = "";
         Log::logger->log(Log::DEBUG, "Reset active submap to the default one.");
         g_pEventManager->postEvent(SHyprIPCEvent{"submap", ""});
-        EMIT_HOOK_EVENT("submap", m_currentSelectedSubmap.name);
+        Event::bus()->m_events.keybinds.submap.emit(m_currentSelectedSubmap.name);
         return {};
     }
 
@@ -2224,7 +2237,7 @@ SDispatchResult CKeybindManager::setSubmap(std::string submap) {
             m_currentSelectedSubmap.name = submap;
             Log::logger->log(Log::DEBUG, "Changed keybind submap to {}", submap);
             g_pEventManager->postEvent(SHyprIPCEvent{"submap", submap});
-            EMIT_HOOK_EVENT("submap", m_currentSelectedSubmap.name);
+            Event::bus()->m_events.keybinds.submap.emit(m_currentSelectedSubmap.name);
             return {};
         }
     }
@@ -2584,7 +2597,7 @@ SDispatchResult CKeybindManager::pinActive(std::string args) {
         g_pCompositor->vectorToWindowUnified(g_pInputManager->getMouseCoordsInternal(), Desktop::View::RESERVED_EXTENTS | Desktop::View::INPUT_EXTENTS);
 
     g_pEventManager->postEvent(SHyprIPCEvent{"pin", std::format("{:x},{}", rc<uintptr_t>(PWINDOW.get()), sc<int>(PWINDOW->m_pinned))});
-    EMIT_HOOK_EVENT("pin", PWINDOW);
+    Event::bus()->m_events.window.pin.emit(PWINDOW);
 
     g_pHyprRenderer->damageWindow(PWINDOW, true);
 
@@ -2739,7 +2752,9 @@ void CKeybindManager::moveWindowOutOfGroup(PHLWINDOW pWindow, const std::string&
 
     WP<Desktop::View::CGroup> group = pWindow->m_group;
 
-    pWindow->m_group->remove(pWindow);
+    const auto                direction = !dir.empty() ? Math::fromChar(dir[0]) : Math::DIRECTION_DEFAULT;
+
+    pWindow->m_group->remove(pWindow, direction);
 
     if (*BFOCUSREMOVEDWINDOW || !group) {
         Desktop::focusState()->fullWindowFocus(pWindow, Desktop::FOCUS_REASON_KEYBIND);
@@ -2835,12 +2850,13 @@ SDispatchResult CKeybindManager::moveWindowOrGroup(std::string args) {
     const bool ISWINDOWGROUP       = PWINDOW->m_group;
     const bool ISWINDOWGROUPLOCKED = ISWINDOWGROUP && PWINDOW->m_group->locked();
     const bool ISWINDOWGROUPSINGLE = ISWINDOWGROUP && PWINDOW->m_group->size() == 1;
+    const bool ISWINDOWGROUPDENIED = ISWINDOWGROUP && PWINDOW->m_group->denied();
 
     updateRelativeCursorCoords();
 
     // note: PWINDOWINDIR is not null implies !PWINDOW->m_isFloating
     if (PWINDOWINDIR && PWINDOWINDIR->m_group) { // target is group
-        if (!*PIGNOREGROUPLOCK && (PWINDOWINDIR->m_group->locked() || ISWINDOWGROUPLOCKED || PWINDOW->m_group->denied())) {
+        if (!*PIGNOREGROUPLOCK && (PWINDOWINDIR->m_group->locked() || ISWINDOWGROUPLOCKED || ISWINDOWGROUPDENIED)) {
             g_layoutManager->moveInDirection(PWINDOW->layoutTarget(), args);
             PWINDOW->warpCursor();
         } else

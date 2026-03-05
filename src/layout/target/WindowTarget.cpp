@@ -10,6 +10,9 @@
 #include "../../Compositor.hpp"
 #include "../../render/Renderer.hpp"
 
+#include <hyprutils/utils/ScopeGuard.hpp>
+
+using namespace Hyprutils::Utils;
 using namespace Layout;
 
 SP<ITarget> CWindowTarget::create(PHLWINDOW w) {
@@ -34,6 +37,9 @@ void CWindowTarget::setPositionGlobal(const CBox& box) {
 
 void CWindowTarget::updatePos() {
 
+    g_pHyprRenderer->damageWindow(m_window.lock());
+    CScopeGuard x([this] { g_pHyprRenderer->damageWindow(m_window.lock()); });
+
     if (!m_space)
         return;
 
@@ -54,6 +60,11 @@ void CWindowTarget::updatePos() {
     }
 
     // Tiled is more complicated.
+
+    // if we are in maximized, force the box to be max work area.
+    // TODO: this shouldn't be here.
+    if (fullscreenMode() == FSMODE_MAXIMIZED)
+        ITarget::setPositionGlobal(m_space->workArea(floating()));
 
     const auto PMONITOR   = m_space->workspace()->m_monitor;
     const auto PWORKSPACE = m_space->workspace();
@@ -104,7 +115,7 @@ void CWindowTarget::updatePos() {
 
     Vector2D          ratioPadding;
 
-    if ((*REQUESTEDRATIO).y != 0 && m_space->algorithm()->tiledTargets() <= 1) {
+    if ((*REQUESTEDRATIO).y != 0 && m_space->algorithm()->tiledTargets() <= 1 && fullscreenMode() == FSMODE_NONE) {
         const Vector2D originalSize = MONITOR_WORKAREA.size();
 
         const double   requestedRatio = (*REQUESTEDRATIO).x / (*REQUESTEDRATIO).y;
@@ -131,7 +142,7 @@ void CWindowTarget::updatePos() {
     calcPos  = calcPos + GAPOFFSETTOPLEFT + ratioPadding / 2;
     calcSize = calcSize - GAPOFFSETTOPLEFT - GAPOFFSETBOTTOMRIGHT - ratioPadding;
 
-    if (isPseudo()) {
+    if (isPseudo() && fullscreenMode() == FSMODE_NONE) {
         // Calculate pseudo
         float scale = 1;
 
@@ -162,18 +173,14 @@ void CWindowTarget::updatePos() {
     static auto PCLAMP_TILED = CConfigValue<Hyprlang::INT>("misc:size_limits_tiled");
 
     if (*PCLAMP_TILED) {
-        const auto borderSize       = m_window->getRealBorderSize();
-        Vector2D   monitorAvailable = MONITOR_WORKAREA.size() - Vector2D{2.0 * borderSize, 2.0 * borderSize};
-
-        Vector2D   minSize = m_window->m_ruleApplicator->minSize().valueOr(Vector2D{MIN_WINDOW_SIZE, MIN_WINDOW_SIZE}).clamp(Vector2D{0, 0}, monitorAvailable);
-        Vector2D   maxSize = m_window->isFullscreen() ? Vector2D{INFINITY, INFINITY} :
-                                                        m_window->m_ruleApplicator->maxSize().valueOr(Vector2D{INFINITY, INFINITY}).clamp(Vector2D{0, 0}, monitorAvailable);
-        calcSize           = calcSize.clamp(minSize, maxSize);
+        Vector2D minSize = m_window->m_ruleApplicator->minSize().valueOr(Vector2D{MIN_WINDOW_SIZE, MIN_WINDOW_SIZE});
+        Vector2D maxSize = m_window->isFullscreen() ? Vector2D{INFINITY, INFINITY} : m_window->m_ruleApplicator->maxSize().valueOr(Vector2D{INFINITY, INFINITY});
+        calcSize         = calcSize.clamp(minSize, maxSize);
 
         calcPos += (availableSpace - calcSize) / 2.0;
 
-        calcPos.x = std::clamp(calcPos.x, MONITOR_WORKAREA.x + borderSize, MONITOR_WORKAREA.x + MONITOR_WORKAREA.w - calcSize.x - borderSize);
-        calcPos.y = std::clamp(calcPos.y, MONITOR_WORKAREA.y + borderSize, MONITOR_WORKAREA.y + MONITOR_WORKAREA.h - calcSize.y - borderSize);
+        calcPos.x = std::clamp(calcPos.x, MONITOR_WORKAREA.x, MONITOR_WORKAREA.x + MONITOR_WORKAREA.w - calcSize.x);
+        calcPos.y = std::clamp(calcPos.y, MONITOR_WORKAREA.y, MONITOR_WORKAREA.y + MONITOR_WORKAREA.h - calcSize.y);
     }
 
     if (m_window->onSpecialWorkspace() && !m_window->isFullscreen()) {
@@ -249,9 +256,11 @@ std::expected<SGeometryRequested, eGeometryFailure> CWindowTarget::desiredGeomet
     requested.size = clampSizeForDesired(DESIRED_GEOM.size());
 
     if (m_window->m_isX11) {
-        Vector2D xy   = {DESIRED_GEOM.x, DESIRED_GEOM.y};
-        xy            = g_pXWaylandManager->xwaylandToWaylandCoords(xy);
-        requested.pos = xy;
+        Vector2D xy    = {DESIRED_GEOM.x, DESIRED_GEOM.y};
+        xy             = g_pXWaylandManager->xwaylandToWaylandCoords(xy);
+        requested.pos  = xy;
+        DESIRED_GEOM.x = xy.x;
+        DESIRED_GEOM.y = xy.y;
     }
 
     const auto STOREDSIZE = m_window->m_ruleApplicator->persistentSize().valueOrDefault() ? g_pConfigManager->getStoredFloatingSize(m_window.lock()) : std::nullopt;
@@ -264,6 +273,12 @@ std::expected<SGeometryRequested, eGeometryFailure> CWindowTarget::desiredGeomet
         return std::unexpected(GEOMETRY_NO_DESIRED);
     }
 
+    static auto PXWLFORCESCALEZERO = CConfigValue<Hyprlang::INT>("xwayland:force_zero_scaling");
+    const auto  toLogical          = [&](SGeometryRequested& req) {
+        if (m_window->m_isX11 && *PXWLFORCESCALEZERO && PMONITOR)
+            req.size /= PMONITOR->m_scale;
+    };
+
     if (DESIRED_GEOM.width <= 2 || DESIRED_GEOM.height <= 2) {
         const auto SURFACE = m_window->wlSurface()->resource();
 
@@ -271,6 +286,7 @@ std::expected<SGeometryRequested, eGeometryFailure> CWindowTarget::desiredGeomet
             // center on mon and call it a day
             requested.pos.reset();
             requested.size = clampSizeForDesired(SURFACE->m_current.size);
+            toLogical(requested);
             return requested;
         }
 
@@ -283,6 +299,7 @@ std::expected<SGeometryRequested, eGeometryFailure> CWindowTarget::desiredGeomet
             if (m_window->m_xwaylandSurface->m_geometry.x != 0 && m_window->m_xwaylandSurface->m_geometry.y != 0) {
                 requested.size = SIZE;
                 requested.pos  = g_pXWaylandManager->xwaylandToWaylandCoords(m_window->m_xwaylandSurface->m_geometry.pos());
+                toLogical(requested);
                 return requested;
             }
         }
@@ -316,6 +333,7 @@ std::expected<SGeometryRequested, eGeometryFailure> CWindowTarget::desiredGeomet
     if (DESIRED_GEOM.w <= 2 || DESIRED_GEOM.h <= 2)
         return std::unexpected(GEOMETRY_NO_DESIRED);
 
+    toLogical(requested);
     return requested;
 }
 
@@ -359,5 +377,6 @@ void CWindowTarget::onUpdateSpace() {
     m_window->m_monitor = space()->workspace()->m_monitor;
     m_window->moveToWorkspace(space()->workspace());
     m_window->updateToplevel();
+    m_window->updateWindowData();
     m_window->updateWindowDecos();
 }

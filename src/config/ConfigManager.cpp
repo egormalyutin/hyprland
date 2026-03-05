@@ -42,7 +42,8 @@
 #include "../managers/input/trackpad/gestures/FullscreenGesture.hpp"
 #include "../managers/input/trackpad/gestures/CursorZoomGesture.hpp"
 
-#include "../managers/HookSystemManager.hpp"
+#include "../event/EventBus.hpp"
+
 #include "../protocols/types/ContentType.hpp"
 #include <cstddef>
 #include <cstdint>
@@ -654,6 +655,8 @@ CConfigManager::CConfigManager() {
     registerConfigVar("scrolling:follow_min_visible", Hyprlang::FLOAT{0.4});
     registerConfigVar("scrolling:explicit_column_widths", Hyprlang::STRING{"0.333, 0.5, 0.667, 1.0"});
     registerConfigVar("scrolling:direction", Hyprlang::STRING{"right"});
+    registerConfigVar("scrolling:wrap_focus", Hyprlang::INT{1});
+    registerConfigVar("scrolling:wrap_swapcol", Hyprlang::INT{1});
 
     registerConfigVar("animations:enabled", Hyprlang::INT{1});
     registerConfigVar("animations:workspace_wraparound", Hyprlang::INT{0});
@@ -794,8 +797,9 @@ CConfigManager::CConfigManager() {
     registerConfigVar("render:cm_auto_hdr", Hyprlang::INT{1});
     registerConfigVar("render:new_render_scheduling", Hyprlang::INT{0});
     registerConfigVar("render:non_shader_cm", Hyprlang::INT{3});
-    registerConfigVar("render:cm_sdr_eotf", Hyprlang::INT{0});
+    registerConfigVar("render:cm_sdr_eotf", {"default"});
     registerConfigVar("render:commit_timing_enabled", Hyprlang::INT{1});
+    registerConfigVar("render:icc_vcgt_enabled", Hyprlang::INT{1});
 
     registerConfigVar("ecosystem:no_update_news", Hyprlang::INT{0});
     registerConfigVar("ecosystem:no_donation_nag", Hyprlang::INT{0});
@@ -858,7 +862,7 @@ CConfigManager::CConfigManager() {
     m_config->addSpecialConfigValue("monitorv2", "mirror", {STRVAL_EMPTY});
     m_config->addSpecialConfigValue("monitorv2", "bitdepth", {STRVAL_EMPTY}); // TODO use correct type
     m_config->addSpecialConfigValue("monitorv2", "cm", {"auto"});
-    m_config->addSpecialConfigValue("monitorv2", "sdr_eotf", Hyprlang::INT{0});
+    m_config->addSpecialConfigValue("monitorv2", "sdr_eotf", {"default"});
     m_config->addSpecialConfigValue("monitorv2", "sdrbrightness", Hyprlang::FLOAT{1.0});
     m_config->addSpecialConfigValue("monitorv2", "sdrsaturation", Hyprlang::FLOAT{1.0});
     m_config->addSpecialConfigValue("monitorv2", "vrr", Hyprlang::INT{0});
@@ -870,6 +874,7 @@ CConfigManager::CConfigManager() {
     m_config->addSpecialConfigValue("monitorv2", "min_luminance", Hyprlang::FLOAT{-1.0});
     m_config->addSpecialConfigValue("monitorv2", "max_luminance", Hyprlang::INT{-1});
     m_config->addSpecialConfigValue("monitorv2", "max_avg_luminance", Hyprlang::INT{-1});
+    m_config->addSpecialConfigValue("monitorv2", "icc", Hyprlang::STRING{""});
 
     // windowrule v3
     m_config->addSpecialCategory("windowrule", {.key = "name"});
@@ -1066,7 +1071,7 @@ static void clearHlVersionVars() {
 }
 
 void CConfigManager::reload() {
-    EMIT_HOOK_EVENT("preConfigReload", nullptr);
+    Event::bus()->m_events.config.preReload.emit();
     setDefaultAnimationVars();
     resetHLConfig();
     m_configCurrentPath = getMainConfigPath();
@@ -1208,8 +1213,18 @@ std::optional<std::string> CConfigManager::handleMonitorv2(const std::string& ou
     if (VAL && VAL->m_bSetByUser)
         parser.parseCM(std::any_cast<Hyprlang::STRING>(VAL->getValue()));
     VAL = m_config->getSpecialConfigValuePtr("monitorv2", "sdr_eotf", output.c_str());
-    if (VAL && VAL->m_bSetByUser)
-        parser.rule().sdrEotf = std::any_cast<Hyprlang::INT>(VAL->getValue());
+    if (VAL && VAL->m_bSetByUser) {
+        const std::string value = std::any_cast<Hyprlang::STRING>(VAL->getValue());
+        // remap legacy
+        if (value == "0")
+            parser.rule().sdrEotf = NTransferFunction::TF_AUTO;
+        else if (value == "1")
+            parser.rule().sdrEotf = NTransferFunction::TF_SRGB;
+        else if (value == "2")
+            parser.rule().sdrEotf = NTransferFunction::TF_GAMMA22;
+        else
+            parser.rule().sdrEotf = NTransferFunction::fromString(value);
+    }
     VAL = m_config->getSpecialConfigValuePtr("monitorv2", "sdrbrightness", output.c_str());
     if (VAL && VAL->m_bSetByUser)
         parser.rule().sdrBrightness = std::any_cast<Hyprlang::FLOAT>(VAL->getValue());
@@ -1245,6 +1260,10 @@ std::optional<std::string> CConfigManager::handleMonitorv2(const std::string& ou
     VAL = m_config->getSpecialConfigValuePtr("monitorv2", "max_avg_luminance", output.c_str());
     if (VAL && VAL->m_bSetByUser)
         parser.rule().maxAvgLuminance = std::any_cast<Hyprlang::INT>(VAL->getValue());
+
+    VAL = m_config->getSpecialConfigValuePtr("monitorv2", "icc", output.c_str());
+    if (VAL && VAL->m_bSetByUser)
+        parser.rule().iccFile = std::any_cast<Hyprlang::STRING>(VAL->getValue());
 
     auto newrule = parser.rule();
 
@@ -1458,7 +1477,7 @@ void CConfigManager::postConfigReload(const Hyprlang::CParseResult& result) {
     // update layouts
     Layout::Supplementary::algoMatcher()->updateWorkspaceLayouts();
 
-    EMIT_HOOK_EVENT("configReloaded", nullptr);
+    Event::bus()->m_events.config.reloaded.emit();
     if (g_pEventManager)
         g_pEventManager->postEvent(SHyprIPCEvent{"configreloaded", ""});
 }
@@ -1747,7 +1766,7 @@ void CConfigManager::performMonitorReload() {
 
     m_wantsMonitorReload = false;
 
-    EMIT_HOOK_EVENT("monitorLayoutChanged", nullptr);
+    Event::bus()->m_events.monitor.layoutChanged.emit();
 }
 
 void* const* CConfigManager::getConfigValuePtr(const std::string& val) {
@@ -2264,6 +2283,15 @@ bool CMonitorRuleParser::parseVRR(const std::string& value) {
     return true;
 }
 
+bool CMonitorRuleParser::parseICC(const std::string& val) {
+    if (val.empty()) {
+        m_error += "invalid icc ";
+        return false;
+    }
+    m_rule.iccFile = val;
+    return true;
+}
+
 void CMonitorRuleParser::setDisabled() {
     m_rule.disabled = true;
 }
@@ -2357,6 +2385,9 @@ std::optional<std::string> CConfigManager::handleMonitor(const std::string& comm
             argno++;
         } else if (ARGS[argno] == "vrr") {
             parser.parseVRR(std::string(ARGS[argno + 1]));
+            argno++;
+        } else if (ARGS[argno] == "icc") {
+            parser.parseICC(std::string(ARGS[argno + 1]));
             argno++;
         } else if (ARGS[argno] == "workspace") {
             const auto& [id, name, isAutoID] = getWorkspaceIDNameFromString(std::string(ARGS[argno + 1]));

@@ -2,6 +2,7 @@
 #include "MiscFunctions.hpp"
 #include "../macros.hpp"
 #include "SharedDefs.hpp"
+#include "../helpers/TransferFunction.hpp"
 #include "math/Math.hpp"
 #include "../protocols/ColorManagement.hpp"
 #include "../Compositor.hpp"
@@ -26,14 +27,15 @@
 #include "../managers/animation/AnimationManager.hpp"
 #include "../managers/animation/DesktopAnimationManager.hpp"
 #include "../managers/input/InputManager.hpp"
-#include "../managers/HookSystemManager.hpp"
 #include "../hyprerror/HyprError.hpp"
 #include "../layout/LayoutManager.hpp"
 #include "../i18n/Engine.hpp"
+#include "../helpers/cm/ColorManagement.hpp"
 #include "sync/SyncTimeline.hpp"
 #include "time/Time.hpp"
 #include "../desktop/view/LayerSurface.hpp"
 #include "../desktop/state/FocusState.hpp"
+#include "../event/EventBus.hpp"
 #include "Drm.hpp"
 #include <aquamarine/output/Output.hpp>
 #include "debug/log/Logger.hpp"
@@ -74,13 +76,16 @@ CMonitor::~CMonitor() {
 }
 
 void CMonitor::onConnect(bool noRule) {
-    EMIT_HOOK_EVENT("preMonitorAdded", m_self.lock());
+    Event::bus()->m_events.monitor.preAdded.emit(m_self.lock());
     CScopeGuard x = {[]() { g_pCompositor->arrangeMonitors(); }};
 
     m_zoomAnimProgress->setValueAndWarp(0.F);
     m_zoomAnimFrameCounter = 0;
 
-    g_pEventLoopManager->doLater([] { g_pConfigManager->ensurePersistentWorkspacesPresent(); });
+    g_pEventLoopManager->doLater([] {
+        g_pConfigManager->ensurePersistentWorkspacesPresent();
+        g_pCompositor->ensureWorkspacesOnAssignedMonitors();
+    });
 
     m_listeners.frame      = m_output->events.frame.listen([this] {
         if (m_frameScheduler)
@@ -288,10 +293,16 @@ void CMonitor::onConnect(bool noRule) {
         if (!valid(ws))
             continue;
 
-        if (ws->m_lastMonitor == m_name || g_pCompositor->m_monitors.size() == 1 /* avoid lost workspaces on recover */) {
+        const auto CURRENTMON = ws->m_monitor.lock();
+        const bool ORPHANED   = !CURRENTMON || std::ranges::none_of(g_pCompositor->m_monitors, [&](const auto& mon) { return mon == CURRENTMON; });
+        const bool RETURNING  = ws->m_lastMonitor == m_name;
+        const bool RECOVERY   = g_pCompositor->m_monitors.size() == 1 && ORPHANED; // temporarily recover orphaned workspaces
+
+        if (RETURNING || RECOVERY) {
             g_pCompositor->moveWorkspaceToMonitor(ws, m_self.lock());
             g_pDesktopAnimationManager->startAnimation(ws, CDesktopAnimationManager::ANIMATION_TYPE_IN, true, true);
-            ws->m_lastMonitor = "";
+            if (RETURNING)
+                ws->m_lastMonitor = "";
         }
     }
 
@@ -347,17 +358,17 @@ void CMonitor::onConnect(bool noRule) {
 
     g_pEventManager->postEvent(SHyprIPCEvent{"monitoradded", m_name});
     g_pEventManager->postEvent(SHyprIPCEvent{"monitoraddedv2", std::format("{},{},{}", m_id, m_name, m_shortDescription)});
-    EMIT_HOOK_EVENT("monitorAdded", m_self.lock());
+    Event::bus()->m_events.monitor.added.emit(m_self.lock());
 }
 
 void CMonitor::onDisconnect(bool destroy) {
-    EMIT_HOOK_EVENT("preMonitorRemoved", m_self.lock());
+    Event::bus()->m_events.monitor.preRemoved.emit(m_self.lock());
     CScopeGuard x = {[this]() {
         if (g_pCompositor->m_isShuttingDown)
             return;
         g_pEventManager->postEvent(SHyprIPCEvent{"monitorremoved", m_name});
         g_pEventManager->postEvent(SHyprIPCEvent{"monitorremovedv2", std::format("{},{},{}", m_id, m_name, m_shortDescription)});
-        EMIT_HOOK_EVENT("monitorRemoved", m_self.lock());
+        Event::bus()->m_events.monitor.removed.emit(m_self.lock());
         g_pCompositor->scheduleMonitorStateRecheck();
     }};
 
@@ -427,19 +438,24 @@ void CMonitor::onDisconnect(bool destroy) {
     m_enabled             = false;
     m_renderingInitPassed = false;
 
+    std::vector<PHLWORKSPACE> wspToMove;
+    for (auto const& w : g_pCompositor->getWorkspaces()) {
+        if (w->m_monitor == m_self || !w->m_monitor)
+            wspToMove.emplace_back(w.lock());
+    }
+
+    // Preserve ownership across cascaded monitor disconnects.
+    // The first disconnected monitor "owns" where a workspace should return.
+    for (auto const& w : wspToMove) {
+        if (w && w->m_lastMonitor.empty())
+            w->m_lastMonitor = m_name;
+    }
+
     if (BACKUPMON) {
         // snap cursor
         g_pCompositor->warpCursorTo(BACKUPMON->m_position + BACKUPMON->m_transformedSize / 2.F, true);
 
-        // move workspaces
-        std::vector<PHLWORKSPACE> wspToMove;
-        for (auto const& w : g_pCompositor->getWorkspaces()) {
-            if (w->m_monitor == m_self || !w->m_monitor)
-                wspToMove.emplace_back(w.lock());
-        }
-
         for (auto const& w : wspToMove) {
-            w->m_lastMonitor = m_name;
             g_pCompositor->moveWorkspaceToMonitor(w, BACKUPMON);
             g_pDesktopAnimationManager->startAnimation(w, CDesktopAnimationManager::ANIMATION_TYPE_IN, true, true);
         }
@@ -480,20 +496,41 @@ void CMonitor::onDisconnect(bool destroy) {
     std::erase_if(g_pCompositor->m_monitors, [&](PHLMONITOR& el) { return el.get() == this; });
 }
 
-void CMonitor::applyCMType(NCMType::eCMType cmType, int cmSdrEotf) {
-    auto        oldImageDescription = m_imageDescription;
-    static auto PSDREOTF            = CConfigValue<Hyprlang::INT>("render:cm_sdr_eotf");
-    auto        chosenSdrEotf       = cmSdrEotf == 0 ? (*PSDREOTF != 3 ? NColorManagement::CM_TRANSFER_FUNCTION_GAMMA22 : NColorManagement::CM_TRANSFER_FUNCTION_SRGB) :
-                                                       (cmSdrEotf == 1 ? NColorManagement::CM_TRANSFER_FUNCTION_SRGB : NColorManagement::CM_TRANSFER_FUNCTION_GAMMA22);
+static NColorManagement::eTransferFunction chooseTF(NTransferFunction::eTF tf) {
+    const auto sdrEOTF = NTransferFunction::fromConfig();
 
-    const auto  masteringPrimaries                                                        = getMasteringPrimaries();
+    switch (tf) {
+        case NTransferFunction::TF_DEFAULT:
+        case NTransferFunction::TF_GAMMA22:
+        case NTransferFunction::TF_FORCED_GAMMA22: return NColorManagement::CM_TRANSFER_FUNCTION_GAMMA22;
+        case NTransferFunction::TF_SRGB: return NColorManagement::CM_TRANSFER_FUNCTION_SRGB;
+
+        case NTransferFunction::TF_AUTO: // use global setting
+            switch (sdrEOTF) {
+                case NTransferFunction::TF_AUTO: return NColorManagement::CM_TRANSFER_FUNCTION_GAMMA22;
+                default: return chooseTF(sdrEOTF);
+            }
+
+        default: UNREACHABLE();
+    }
+}
+
+void CMonitor::applyCMType(NCMType::eCMType cmType, NTransferFunction::eTF cmSdrEotf) {
+    auto                                                              oldImageDescription = m_imageDescription;
+    const auto                                                        chosenSdrEotf       = chooseTF(cmSdrEotf);
+
+    const auto                                                        masteringPrimaries  = getMasteringPrimaries();
     const NColorManagement::SImageDescription::SPCMasteringLuminances masteringLuminances = getMasteringLuminances();
 
     const auto                                                        maxFALL = this->maxFALL();
     const auto                                                        maxCLL  = this->maxCLL();
 
     switch (cmType) {
-        case NCMType::CM_SRGB: m_imageDescription = CImageDescription::from({.transferFunction = chosenSdrEotf}); break; // assumes SImageDescription defaults to sRGB
+        case NCMType::CM_SRGB:
+            m_imageDescription = CImageDescription::from({.transferFunction = chosenSdrEotf,
+                                                          .primariesNamed   = NColorManagement::CM_PRIMARIES_SRGB,
+                                                          .primaries        = NColorManagement::getPrimaries(NColorManagement::CM_PRIMARIES_SRGB)});
+            break; // assumes SImageDescription defaults to sRGB
         case NCMType::CM_WIDE:
             m_imageDescription = CImageDescription::from({.transferFunction    = chosenSdrEotf,
                                                           .primariesNameSet    = true,
@@ -896,28 +933,45 @@ bool CMonitor::applyMonitorRule(SMonitorRule* pMonitorRule, bool force) {
     m_supportsWideColor = RULE->supportsHDR;
     m_supportsHDR       = RULE->supportsHDR;
 
-    m_cmType = RULE->cmType;
-    switch (m_cmType) {
-        case NCMType::CM_AUTO: m_cmType = m_enabled10bit && supportsWideColor() ? NCMType::CM_WIDE : NCMType::CM_SRGB; break;
-        case NCMType::CM_EDID: m_cmType = m_output->parsedEDID.chromaticityCoords.has_value() ? NCMType::CM_EDID : NCMType::CM_SRGB; break;
-        case NCMType::CM_HDR:
-        case NCMType::CM_HDR_EDID: m_cmType = supportsHDR() ? m_cmType : NCMType::CM_SRGB; break;
-        default: break;
+    if (RULE->iccFile.empty()) {
+        // only apply explicit cm settings if we have no icc file
+
+        m_cmType = RULE->cmType;
+        switch (m_cmType) {
+            case NCMType::CM_AUTO: m_cmType = m_enabled10bit && supportsWideColor() ? NCMType::CM_WIDE : NCMType::CM_SRGB; break;
+            case NCMType::CM_EDID: m_cmType = m_output->parsedEDID.chromaticityCoords.has_value() ? NCMType::CM_EDID : NCMType::CM_SRGB; break;
+            case NCMType::CM_HDR:
+            case NCMType::CM_HDR_EDID: m_cmType = supportsHDR() ? m_cmType : NCMType::CM_SRGB; break;
+            default: break;
+        }
+
+        m_sdrEotf = RULE->sdrEotf;
+
+        m_sdrMinLuminance = RULE->sdrMinLuminance;
+        m_sdrMaxLuminance = RULE->sdrMaxLuminance;
+
+        m_minLuminance    = RULE->minLuminance;
+        m_maxLuminance    = RULE->maxLuminance;
+        m_maxAvgLuminance = RULE->maxAvgLuminance;
+
+        applyCMType(m_cmType, m_sdrEotf);
+
+        m_sdrSaturation = RULE->sdrSaturation;
+        m_sdrBrightness = RULE->sdrBrightness;
+    } else {
+        auto image = NColorManagement::SImageDescription::fromICC(RULE->iccFile);
+        if (!image) {
+            Log::logger->log(Log::ERR, "icc for {} ({}) failed: {}", m_name, RULE->iccFile, image.error());
+            g_pConfigManager->addParseError(std::format("failed to apply icc {} to {}: {}", RULE->iccFile, m_name, image.error()));
+        } else {
+            m_imageDescription = CImageDescription::from(*image);
+            if (!m_imageDescription) {
+                Log::logger->log(Log::ERR, "icc for {} ({}) failed 2: {}", m_name, RULE->iccFile, image.error());
+                g_pConfigManager->addParseError(std::format("failed to apply icc {} to {}: {}", RULE->iccFile, m_name, image.error()));
+                m_imageDescription = CImageDescription::from(SImageDescription{});
+            }
+        }
     }
-
-    m_sdrEotf = RULE->sdrEotf;
-
-    m_sdrMinLuminance = RULE->sdrMinLuminance;
-    m_sdrMaxLuminance = RULE->sdrMaxLuminance;
-
-    m_minLuminance    = RULE->minLuminance;
-    m_maxLuminance    = RULE->maxLuminance;
-    m_maxAvgLuminance = RULE->maxAvgLuminance;
-
-    applyCMType(m_cmType, m_sdrEotf);
-
-    m_sdrSaturation = RULE->sdrSaturation;
-    m_sdrBrightness = RULE->sdrBrightness;
 
     Vector2D logicalSize = m_pixelSize / m_scale;
     if (!*PDISABLESCALECHECKS && (logicalSize.x != std::round(logicalSize.x) || logicalSize.y != std::round(logicalSize.y))) {
@@ -1000,6 +1054,8 @@ bool CMonitor::applyMonitorRule(SMonitorRule* pMonitorRule, bool force) {
 
     m_damage.setSize(m_transformedSize);
 
+    updateVCGTRamps();
+
     // Set scale for all surfaces on this monitor, needed for some clients
     // but not on unsafe state to avoid crashes
     if (!g_pCompositor->m_unsafeState) {
@@ -1016,7 +1072,7 @@ bool CMonitor::applyMonitorRule(SMonitorRule* pMonitorRule, bool force) {
     Log::logger->log(Log::DEBUG, "Monitor {} data dump: res {:X}@{:.2f}Hz, scale {:.2f}, transform {}, pos {:X}, 10b {}", m_name, m_pixelSize, m_refreshRate, m_scale,
                      sc<int>(m_transform), m_position, sc<int>(m_enabled10bit));
 
-    EMIT_HOOK_EVENT("monitorLayoutChanged", nullptr);
+    Event::bus()->m_events.monitor.layoutChanged.emit();
 
     m_events.modeChanged.emit();
 
@@ -1306,7 +1362,7 @@ void CMonitor::changeWorkspace(const PHLWORKSPACE& pWorkspace, bool internal, bo
         // move pinned windows
         for (auto const& w : g_pCompositor->m_windows) {
             if (w->m_workspace == POLDWORKSPACE && w->m_pinned)
-                w->moveToWorkspace(pWorkspace);
+                w->layoutTarget()->assignToSpace(pWorkspace->m_space);
         }
 
         if (!noFocus && !Desktop::focusState()->monitor()->m_activeSpecialWorkspace &&
@@ -1336,7 +1392,7 @@ void CMonitor::changeWorkspace(const PHLWORKSPACE& pWorkspace, bool internal, bo
 
         g_pEventManager->postEvent(SHyprIPCEvent{"workspace", pWorkspace->m_name});
         g_pEventManager->postEvent(SHyprIPCEvent{"workspacev2", std::format("{},{}", pWorkspace->m_id, pWorkspace->m_name)});
-        EMIT_HOOK_EVENT("workspace", pWorkspace);
+        Event::bus()->m_events.workspace.active.emit(pWorkspace);
     }
 
     // set all LSes as not above fullscreen on workspace changes
@@ -1425,6 +1481,7 @@ void CMonitor::setSpecialWorkspace(const PHLWORKSPACE& pWorkspace) {
     if (const auto PMWSOWNER = pWorkspace->m_monitor.lock(); PMWSOWNER && PMWSOWNER->m_activeSpecialWorkspace == pWorkspace) {
         PMWSOWNER->m_activeSpecialWorkspace.reset();
         g_layoutManager->recalculateMonitor(PMWSOWNER);
+        g_pHyprRenderer->damageMonitor(PMWSOWNER);
         g_pEventManager->postEvent(SHyprIPCEvent{"activespecial", "," + PMWSOWNER->m_name});
         g_pEventManager->postEvent(SHyprIPCEvent{"activespecialv2", ",," + PMWSOWNER->m_name});
 
@@ -2149,14 +2206,14 @@ bool CMonitor::canNoShaderCM() {
 
     const auto SRC_DESC_VALUE = SRC_DESC.value()->value();
 
-    if (SRC_DESC_VALUE.icc.fd >= 0 || m_imageDescription->value().icc.fd >= 0)
-        return false; // no ICC support
+    if (m_imageDescription->value().icc.present)
+        return false;
 
-    static auto PSDREOTF = CConfigValue<Hyprlang::INT>("render:cm_sdr_eotf");
+    const auto sdrEOTF = NTransferFunction::fromConfig();
     // only primaries differ
     return (
         (SRC_DESC_VALUE.transferFunction == m_imageDescription->value().transferFunction ||
-         (*PSDREOTF == 2 && SRC_DESC_VALUE.transferFunction == NColorManagement::CM_TRANSFER_FUNCTION_SRGB &&
+         (sdrEOTF == NTransferFunction::TF_FORCED_GAMMA22 && SRC_DESC_VALUE.transferFunction == NColorManagement::CM_TRANSFER_FUNCTION_SRGB &&
           m_imageDescription->value().transferFunction == NColorManagement::CM_TRANSFER_FUNCTION_GAMMA22)) &&
         SRC_DESC_VALUE.transferFunctionPower == m_imageDescription->value().transferFunctionPower &&
         (!inHDR() || SRC_DESC_VALUE.luminances == m_imageDescription->value().luminances)
@@ -2167,6 +2224,71 @@ bool CMonitor::canNoShaderCM() {
 
 bool CMonitor::doesNoShaderCM() {
     return m_noShaderCTM;
+}
+
+static std::vector<uint16_t> resampleInterleavedToKms(const SVCGTTable16& t, size_t gammaSize) {
+    std::vector<uint16_t> out;
+    out.resize(gammaSize * 3);
+
+    //
+    auto sample = [&](int c, float x) -> uint16_t {
+        const float maxX = t.entries - 1;
+        x                = std::clamp(x, 0.F, maxX);
+
+        const size_t i0 = (size_t)std::floor(x);
+        const size_t i1 = std::min(i0 + 1, (size_t)t.entries - 1);
+        const float  f  = x - sc<float>(i0);
+
+        const float  v0 = sc<float>(t.ch[c][i0]);
+        const float  v1 = sc<float>(t.ch[c][i1]);
+        const float  v  = v0 + ((v1 - v0) * f);
+
+        int64_t      vi = std::round(v);
+        vi              = std::clamp(vi, sc<int64_t>(0), sc<int64_t>(65535));
+        return sc<uint16_t>(vi);
+    };
+
+    for (size_t i = 0; i < gammaSize; ++i) {
+        float          x = sc<float>(i) * sc<float>(t.entries - 1) / sc<float>(gammaSize - 1);
+
+        const uint16_t r = sample(0, x);
+        const uint16_t g = sample(1, x);
+        const uint16_t b = sample(2, x);
+
+        out[i * 3 + 0] = r;
+        out[i * 3 + 1] = g;
+        out[i * 3 + 2] = b;
+    }
+
+    return out;
+}
+
+void CMonitor::updateVCGTRamps() {
+    auto gammaSize = m_output->getGammaSize();
+
+    if (gammaSize <= 10) {
+        Log::logger->log(Log::DEBUG, "CMonitor::updateVCGTRamps: skipping, no gamma ramp for output");
+        return;
+    }
+
+    if (!m_imageDescription->value().icc.vcgt) {
+        if (m_vcgtRampsSet)
+            m_output->state->setGammaLut({});
+
+        m_vcgtRampsSet = false;
+        return;
+    }
+
+    // build table
+    auto table = resampleInterleavedToKms(*m_imageDescription->value().icc.vcgt, gammaSize);
+
+    m_output->state->setGammaLut(table);
+
+    m_vcgtRampsSet = true;
+}
+
+bool CMonitor::gammaRampsInUse() {
+    return m_vcgtRampsSet;
 }
 
 CMonitorState::CMonitorState(CMonitor* owner) : m_owner(owner) {
@@ -2196,7 +2318,7 @@ bool CMonitorState::commit() {
     if (!updateSwapchain())
         return false;
 
-    EMIT_HOOK_EVENT("preMonitorCommit", m_owner->m_self.lock());
+    Event::bus()->m_events.monitor.preCommit.emit(m_owner->m_self.lock());
 
     ensureBufferPresent();
 

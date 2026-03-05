@@ -93,9 +93,9 @@ static void testSwapWindow() {
     {
         getFromSocket("/dispatch focuswindow class:kitty_A");
         auto pos = getWindowAttribute(getFromSocket("/activewindow"), "at:");
-        NLog::log("{}Testing kitty_A {}, swapwindow with direction 'l'", Colors::YELLOW, pos);
+        NLog::log("{}Testing kitty_A {}, swapwindow with direction 'r'", Colors::YELLOW, pos);
 
-        OK(getFromSocket("/dispatch swapwindow l"));
+        OK(getFromSocket("/dispatch swapwindow r"));
         OK(getFromSocket("/dispatch focuswindow class:kitty_B"));
 
         EXPECT_CONTAINS(getFromSocket("/activewindow"), std::format("{}", pos));
@@ -566,6 +566,98 @@ static bool testWindowRuleFocusOnActivate() {
     return true;
 }
 
+// tests if a pinned window contains the valid workspace after change
+static bool testPinnedWorkspacesValid() {
+    OK(getFromSocket("/reload"));
+    getFromSocket("/dispatch workspace 1337");
+
+    if (!spawnKitty("kitty")) {
+        NLog::log("{}Error: failed to spawn kitty", Colors::RED);
+        return false;
+    }
+
+    OK(getFromSocket("/dispatch setfloating class:kitty"));
+    OK(getFromSocket("/dispatch pin class:kitty"));
+
+    {
+        auto str = getFromSocket("/activewindow");
+        EXPECT(str.contains("workspace: 1337"), true);
+        EXPECT(str.contains("pinned: 1"), true);
+    }
+
+    getFromSocket("/dispatch workspace 1338");
+
+    {
+        auto str = getFromSocket("/activewindow");
+        EXPECT(str.contains("workspace: 1338"), true);
+        EXPECT(str.contains("pinned: 1"), true);
+    }
+
+    OK(getFromSocket("/dispatch settiled class:kitty"))
+
+    {
+        auto str = getFromSocket("/activewindow");
+        EXPECT(str.contains("workspace: 1338"), true);
+        EXPECT(str.contains("pinned: 0"), true);
+    }
+
+    NLog::log("{}Reloading config", Colors::YELLOW);
+    OK(getFromSocket("/reload"));
+
+    NLog::log("{}Killing all windows", Colors::YELLOW);
+    Tests::killAllWindows();
+
+    NLog::log("{}Expecting 0 windows", Colors::YELLOW);
+    EXPECT(Tests::windowCount(), 0);
+
+    return true;
+}
+
+static bool testWindowRuleWorkspaceEmpty() {
+    NLog::log("{}Testing windowrule workspace empty", Colors::YELLOW);
+    OK(getFromSocket("/reload"));
+
+    OK(getFromSocket("/keyword windowrule match:class kitty_A, workspace empty"));
+    OK(getFromSocket("/keyword windowrule match:class kitty_B, workspace emptyn"));
+
+    getFromSocket("/dispatch workspace 3");
+
+    if (!spawnKitty("kitty")) {
+        NLog::log("{}Error: failed to spawn kitty", Colors::RED);
+        return false;
+    }
+
+    {
+        auto str = getFromSocket("/activewindow");
+        EXPECT(str.contains("workspace: 3"), true);
+    }
+
+    if (!spawnKitty("kitty_A")) {
+        NLog::log("{}Error: failed to spawn kitty", Colors::RED);
+        return false;
+    }
+
+    {
+        auto str = getFromSocket("/activewindow");
+        EXPECT(str.contains("workspace: 1"), true);
+    }
+
+    getFromSocket("/dispatch workspace 3");
+    if (!spawnKitty("kitty_B")) {
+        NLog::log("{}Error: failed to spawn kitty", Colors::RED);
+        return false;
+    }
+
+    {
+        auto str = getFromSocket("/activewindow");
+        EXPECT(str.contains("workspace: 4"), true);
+    }
+
+    Tests::killAllWindows();
+
+    return true;
+}
+
 static bool test() {
     NLog::log("{}Testing windows", Colors::GREEN);
 
@@ -679,14 +771,14 @@ static bool test() {
     EXPECT(Tests::windowCount(), 3);
 
     NLog::log("{}Checking props of xeyes", Colors::YELLOW);
-    // check some window props of xeyes, try to tile them
+    // check some window props of xeyes, try to float it
     {
         auto str = getFromSocket("/clients");
-        EXPECT_CONTAINS(str, "floating: 1");
-        getFromSocket("/dispatch settiled class:XEyes");
+        EXPECT_NOT_CONTAINS(str, "floating: 1");
+        getFromSocket("/dispatch setfloating class:XEyes");
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         str = getFromSocket("/clients");
-        EXPECT_NOT_CONTAINS(str, "floating: 1");
+        EXPECT_CONTAINS(str, "floating: 1");
     }
 
     // kill all
@@ -1028,6 +1120,8 @@ static bool test() {
     testGroupFallbackFocus();
     testInitialFloatSize();
     testWindowRuleFocusOnActivate();
+    testPinnedWorkspacesValid();
+    testWindowRuleWorkspaceEmpty();
 
     NLog::log("{}Reloading config", Colors::YELLOW);
     OK(getFromSocket("/reload"));

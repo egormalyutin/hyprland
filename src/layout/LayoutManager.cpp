@@ -5,19 +5,13 @@
 
 #include "../config/ConfigManager.hpp"
 #include "../Compositor.hpp"
-#include "../managers/HookSystemManager.hpp"
 #include "../desktop/state/FocusState.hpp"
 #include "../desktop/view/Group.hpp"
+#include "../event/EventBus.hpp"
 
 using namespace Layout;
 
-CLayoutManager::CLayoutManager() {
-    static auto P = g_pHookSystem->hookDynamic("monitorLayoutChanged", [](void* hk, SCallbackInfo& info, std::any param) {
-        for (const auto& ws : g_pCompositor->getWorkspaces()) {
-            ws->m_space->recheckWorkArea();
-        }
-    });
-}
+CLayoutManager::CLayoutManager() = default;
 
 void CLayoutManager::newTarget(SP<ITarget> target, SP<CSpace> space) {
     // on a new target: remember desired pos for float, if available
@@ -65,6 +59,13 @@ void CLayoutManager::resizeTarget(const Vector2D& Δ, SP<ITarget> target, eRectC
     }
 
     target->space()->resizeTarget(Δ, target, corner);
+}
+
+void CLayoutManager::setTargetGeom(const CBox& box, SP<ITarget> target) {
+    if (!target->floating())
+        return;
+
+    target->space()->setTargetGeom(box, target);
 }
 
 std::expected<void, std::string> CLayoutManager::layoutMsg(const std::string_view& sv) {

@@ -9,7 +9,7 @@
 #include "managers/KeybindManager.hpp"
 #include "managers/SessionLockManager.hpp"
 #include "desktop/view/Window.hpp"
-#include "protocols/types/ColorManagement.hpp"
+#include "helpers/cm/ColorManagement.hpp"
 
 #include <aquamarine/backend/Backend.hpp>
 #include <aquamarine/output/Output.hpp>
@@ -121,7 +121,7 @@ class CCompositor {
     WORKSPACEID            getNextAvailableNamedWorkspace();
     bool                   isPointOnAnyMonitor(const Vector2D&);
     bool                   isPointOnReservedArea(const Vector2D& point, const PHLMONITOR monitor = nullptr);
-    CBox                   calculateX11WorkArea();
+    std::optional<CBox>    calculateX11WorkArea();
     PHLMONITOR             getMonitorInDirection(Math::eDirection);
     PHLMONITOR             getMonitorInDirection(PHLMONITOR, Math::eDirection);
     void                   updateAllWindowsAnimatedDecorationValues();
@@ -161,6 +161,7 @@ class CCompositor {
     void                                updateSuspendedStates();
     void                                onNewMonitor(SP<Aquamarine::IOutput> output);
     void                                ensurePersistentWorkspacesPresent(const std::vector<SWorkspaceRule>& rules, PHLWORKSPACE pWorkspace = nullptr);
+    void                                ensureWorkspacesOnAssignedMonitors();
     std::optional<unsigned int>         getVTNr();
     bool                                isVRRActiveOnAnyMonitor() const;
 
