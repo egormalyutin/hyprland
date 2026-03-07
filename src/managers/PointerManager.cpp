@@ -8,6 +8,7 @@
 #include "../protocols/IdleNotify.hpp"
 #include "../protocols/core/Compositor.hpp"
 #include "../protocols/core/Seat.hpp"
+#include "debug/log/Logger.hpp"
 #include "eventLoop/EventLoopManager.hpp"
 #include "../render/pass/TexPassElement.hpp"
 #include "../managers/input/InputManager.hpp"
@@ -22,6 +23,8 @@
 #include <cstring>
 #include <gbm.h>
 #include <cairo/cairo.h>
+#include <hyprutils/math/Region.hpp>
+#include <hyprutils/math/Vector2D.hpp>
 #include <hyprutils/utils/ScopeGuard.hpp>
 
 using namespace Hyprutils::Utils;
@@ -407,7 +410,7 @@ bool CPointerManager::setHWCursorBuffer(SP<SMonitorPointerState> state, SP<Aquam
     return true;
 }
 
-SP<Aquamarine::IBuffer> CPointerManager::renderHWCursorBuffer(SP<CPointerManager::SMonitorPointerState> state, SP<CTexture> texture) {
+SP<Aquamarine::IBuffer> CPointerManager::renderHWCursorBuffer(SP<CPointerManager::SMonitorPointerState> state, SP<ITexture> texture) {
     auto        maxSize    = state->monitor->m_output->cursorPlaneSize();
     auto const& cursorSize = m_currentCursorImage.size;
 
@@ -578,8 +581,7 @@ SP<Aquamarine::IBuffer> CPointerManager::renderHWCursorBuffer(SP<CPointerManager
         return buf;
     }
 
-    g_pHyprRenderer->makeEGLCurrent();
-    g_pHyprOpenGL->m_renderData.pMonitor = state->monitor;
+    g_pHyprRenderer->m_renderData.pMonitor = state->monitor;
 
     auto RBO = g_pHyprRenderer->getOrCreateRenderbuffer(buf, state->monitor->m_cursorSwapchain->currentOptions().format);
     if (!RBO) {
@@ -589,17 +591,22 @@ SP<Aquamarine::IBuffer> CPointerManager::renderHWCursorBuffer(SP<CPointerManager
 
     RBO->bind();
 
-    g_pHyprOpenGL->beginSimple(state->monitor.lock(), {0, 0, INT_MAX, INT_MAX}, RBO);
-    g_pHyprOpenGL->clear(CHyprColor{0.F, 0.F, 0.F, 0.F}); // ensure the RBO is zero initialized.
+    CRegion damageRegion = {0, 0, INT_MAX, INT_MAX};
+    g_pHyprRenderer->beginFullFakeRender(state->monitor.lock(), damageRegion, RBO->getFB());
+    g_pHyprRenderer->startRenderPass();
+    g_pHyprRenderer->draw(makeUnique<CClearPassElement>(CClearPassElement::SClearData{{0.F, 0.F, 0.F, 0.F}}), {});
 
     CBox xbox = {{}, Vector2D{m_currentCursorImage.size / m_currentCursorImage.scale * state->monitor->m_scale}.round()};
     Log::logger->log(Log::TRACE, "[pointer] monitor: {}, size: {}, hw buf: {}, scale: {:.2f}, monscale: {:.2f}, xbox: {}", state->monitor->m_name, m_currentCursorImage.size,
                      cursorSize, m_currentCursorImage.scale, state->monitor->m_scale, xbox.size());
 
-    g_pHyprOpenGL->renderTexture(texture, xbox, {.noCM = true});
+    CTexPassElement::SRenderData data;
+    data.tex = texture;
+    data.box = xbox;
+    g_pHyprRenderer->draw(makeUnique<CTexPassElement>(std::move(data)), {});
 
-    g_pHyprOpenGL->end();
-    g_pHyprOpenGL->m_renderData.pMonitor.reset();
+    g_pHyprRenderer->endRender();
+    g_pHyprRenderer->m_renderData.pMonitor.reset();
 
     return buf;
 }
@@ -900,13 +907,13 @@ const CPointerManager::SCursorImage& CPointerManager::currentCursorImage() {
     return m_currentCursorImage;
 }
 
-SP<CTexture> CPointerManager::getCurrentCursorTexture() {
+SP<ITexture> CPointerManager::getCurrentCursorTexture() {
     if (!m_currentCursorImage.pBuffer && (!m_currentCursorImage.surface || !m_currentCursorImage.surface->resource()->m_current.texture))
         return nullptr;
 
     if (m_currentCursorImage.pBuffer) {
         if (!m_currentCursorImage.bufferTex)
-            m_currentCursorImage.bufferTex = makeShared<CTexture>(m_currentCursorImage.pBuffer, true);
+            m_currentCursorImage.bufferTex = g_pHyprRenderer->createTexture(m_currentCursorImage.pBuffer, true);
         return m_currentCursorImage.bufferTex;
     }
 

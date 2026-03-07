@@ -12,6 +12,8 @@
 
 #include <xf86drmMode.h>
 #include "MonitorZoomController.hpp"
+#include "../render/Texture.hpp"
+#include "../render/Framebuffer.hpp"
 #include "time/Timer.hpp"
 #include "math/Math.hpp"
 #include "../desktop/reserved/ReservedArea.hpp"
@@ -127,7 +129,7 @@ class CMonitor {
     bool                        m_scheduledRecalc = false;
     wl_output_transform         m_transform       = WL_OUTPUT_TRANSFORM_NORMAL;
     float                       m_xwaylandScale   = 1.f;
-    Mat3x3                      m_projMatrix;
+
     std::optional<Vector2D>     m_forceSize;
     SP<Aquamarine::SOutputMode> m_currentMode;
     SP<Aquamarine::CSwapchain>  m_cursorSwapchain;
@@ -160,6 +162,9 @@ class CMonitor {
 
     SMonitorRule                m_activeMonitorRule;
 
+    SP<ITexture>                m_splash;
+    SP<ITexture>                m_background;
+
     // explicit sync
     Hyprutils::OS::CFileDescriptor m_inFence; // TODO: remove when aq uses CFileDescriptor
 
@@ -170,6 +175,15 @@ class CMonitor {
     // mirroring
     PHLMONITORREF              m_mirrorOf;
     std::vector<PHLMONITORREF> m_mirrors;
+    SP<IFramebuffer>           m_monitorMirrorFB;
+
+    // rendering fb
+    SP<IFramebuffer> m_offloadFB;
+    SP<IFramebuffer> m_mirrorFB;     // these are used for some effects,
+    SP<IFramebuffer> m_mirrorSwapFB; // etc
+    SP<IFramebuffer> m_offMainFB;
+    SP<IFramebuffer> m_blurFB;
+    SP<ITexture>     m_stencilTex;
 
     // ctm
     Mat3x3 m_ctm        = Mat3x3::identity();
@@ -303,7 +317,6 @@ class CMonitor {
     void        setSpecialWorkspace(const WORKSPACEID& id);
     void        moveTo(const Vector2D& pos);
     Vector2D    middle();
-    void        updateMatrix();
     WORKSPACEID activeWorkspaceID();
     WORKSPACEID activeSpecialWorkspaceID();
     CBox        logicalBox();
@@ -319,21 +332,25 @@ class CMonitor {
     void        onCursorMovedOnMonitor();
     void        setDPMS(bool on);
 
-    void        debugLastPresentation(const std::string& message);
+    //
+    const Mat3x3& getTransformMatrix();
+    const Mat3x3& getScaleMatrix();
 
-    bool        supportsWideColor();
-    bool        supportsHDR();
-    float       minLuminance(float defaultValue = 0);
-    int         maxLuminance(int defaultValue = 80);
-    int         maxAvgLuminance(int defaultValue = 80);
-    float       maxFALL();
-    float       maxCLL();
+    void          debugLastPresentation(const std::string& message);
 
-    bool        wantsWideColor();
-    bool        wantsHDR();
+    bool          supportsWideColor();
+    bool          supportsHDR();
+    float         minLuminance(float defaultValue = 0);
+    int           maxLuminance(int defaultValue = 80);
+    int           maxAvgLuminance(int defaultValue = 80);
+    float         maxFALL();
+    float         maxCLL();
 
-    bool        inHDR();
-    bool        gammaRampsInUse();
+    bool          wantsWideColor();
+    bool          wantsHDR();
+
+    bool          inHDR();
+    bool          gammaRampsInUse();
 
     /// Has an active workspace with a real fullscreen window (includes special workspace)
     bool inFullscreenMode();
@@ -343,6 +360,8 @@ class CMonitor {
 
     NColorManagement::SPCPRimaries                              getMasteringPrimaries();
     NColorManagement::SImageDescription::SPCMasteringLuminances getMasteringLuminances();
+
+    uint32_t                                                    getPreferredReadFormat();
 
     bool                                                        needsCM();
     /// Can do CM without shader
@@ -358,6 +377,9 @@ class CMonitor {
     NColorManagement::PImageDescription m_imageDescription = NColorManagement::CImageDescription::from(NColorManagement::SImageDescription{});
     bool                                m_noShaderCTM      = false; // sets drm CTM, restore needed
 
+    bool                                m_blurFBDirty        = true;
+    bool                                m_blurFBShouldRender = false;
+
     // For the list lookup
 
     bool operator==(const CMonitor& rhs) {
@@ -365,6 +387,10 @@ class CMonitor {
     }
 
   private:
+    void                    updateMatrix();
+    Mat3x3                  m_projMatrix;
+    Mat3x3                  m_projOutputMatrix;
+
     void                    setupDefaultWS(const SMonitorRule&);
     WORKSPACEID             findAvailableDefaultWS();
     void                    commitDPMSState(bool state);

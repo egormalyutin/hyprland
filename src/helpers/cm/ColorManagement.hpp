@@ -17,7 +17,7 @@
 #define HDR_REF_LUMINANCE 203.0
 #define HLG_MAX_LUMINANCE 1000.0
 
-class CTexture;
+class ITexture;
 
 namespace NColorManagement {
     enum eNoShader : uint8_t {
@@ -219,7 +219,7 @@ namespace NColorManagement {
             bool                        present = false;
             size_t                      lutSize = 33;
             std::vector<float>          lutDataPacked;
-            SP<CTexture>                lutTexture;
+            SP<ITexture>                lutTexture;
             std::optional<SVCGTTable16> vcgt;
         } icc;
 
@@ -322,18 +322,22 @@ namespace NColorManagement {
 
     using PImageDescription = WP<const CImageDescription>;
 
-    static const auto DEFAULT_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{.transferFunction = NColorManagement::CM_TRANSFER_FUNCTION_GAMMA22,
-                                                                                            .primariesNameSet = true,
-                                                                                            .primariesNamed   = NColorManagement::CM_PRIMARIES_SRGB,
-                                                                                            .primaries        = NColorManagement::getPrimaries(NColorManagement::CM_PRIMARIES_SRGB),
-                                                                                            .luminances       = {.min = SDR_MIN_LUMINANCE, .max = 80, .reference = 80}});
+    static const auto DEFAULT_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
+        .transferFunction = NColorManagement::CM_TRANSFER_FUNCTION_GAMMA22,
+        .primariesNameSet = true,
+        .primariesNamed   = NColorManagement::CM_PRIMARIES_SRGB,
+        .primaries        = NColorManagement::getPrimaries(NColorManagement::CM_PRIMARIES_SRGB),
+        .luminances       = {.min = SDR_MIN_LUMINANCE, .max = 80, .reference = 80},
+    });
 
-    static const auto DEFAULT_HDR_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{.transferFunction = NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ,
-                                                                                                .primariesNameSet = true,
-                                                                                                .primariesNamed   = NColorManagement::CM_PRIMARIES_BT2020,
-                                                                                                .primaries  = NColorManagement::getPrimaries(NColorManagement::CM_PRIMARIES_BT2020),
-                                                                                                .luminances = {.min = HDR_MIN_LUMINANCE, .max = 10000, .reference = 203}});
-    ;
+    static const auto DEFAULT_HDR_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
+        .transferFunction = NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ,
+        .primariesNameSet = true,
+        .primariesNamed   = NColorManagement::CM_PRIMARIES_BT2020,
+        .primaries        = NColorManagement::getPrimaries(NColorManagement::CM_PRIMARIES_BT2020),
+        .luminances       = {.min = HDR_MIN_LUMINANCE, .max = 10000, .reference = 203},
+    });
+
     static const auto SCRGB_IMAGE_DESCRIPTION = CImageDescription::from(SImageDescription{
         .transferFunction = NColorManagement::CM_TRANSFER_FUNCTION_EXT_LINEAR,
         .windowsScRGB     = true,
@@ -342,6 +346,6 @@ namespace NColorManagement {
         .primaries        = NColorPrimaries::BT709,
         .luminances       = {.reference = 203},
     });
-    ;
 
+    static const auto LINEAR_IMAGE_DESCRIPTION = SCRGB_IMAGE_DESCRIPTION; // TODO any reason to use something different?
 }
