@@ -603,7 +603,7 @@ SP<Aquamarine::IBuffer> CPointerManager::renderHWCursorBuffer(SP<CPointerManager
     CTexPassElement::SRenderData data;
     data.tex = texture;
     data.box = xbox;
-    g_pHyprRenderer->draw(makeUnique<CTexPassElement>(std::move(data)), {});
+    g_pHyprRenderer->draw(makeUnique<CTexPassElement>(std::move(data)), damageRegion);
 
     g_pHyprRenderer->endRender();
     g_pHyprRenderer->m_renderData.pMonitor.reset();
@@ -950,8 +950,8 @@ void CPointerManager::attachPointer(SP<IPointer> pointer) {
             CKeybindManager::dpms("on");
     });
 
-    listener->button = pointer->m_pointerEvents.button.listen([](const IPointer::SButtonEvent& event) {
-        g_pInputManager->onMouseButton(event);
+    listener->button = pointer->m_pointerEvents.button.listen([weak = WP<IPointer>(pointer)](const IPointer::SButtonEvent& event) {
+        g_pInputManager->onMouseButton(event, weak.lock());
         PROTO::idle->onActivity();
     });
 

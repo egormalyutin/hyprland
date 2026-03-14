@@ -30,11 +30,11 @@
 #include "../layout/LayoutManager.hpp"
 #include "../layout/space/Space.hpp"
 #include "../i18n/Engine.hpp"
-#include "desktop/DesktopTypes.hpp"
+#include "../desktop/DesktopTypes.hpp"
 #include "../event/EventBus.hpp"
-#include "helpers/CursorShapes.hpp"
-#include "helpers/MainLoopExecutor.hpp"
-#include "helpers/Monitor.hpp"
+#include "../helpers/CursorShapes.hpp"
+#include "../helpers/MainLoopExecutor.hpp"
+#include "../helpers/Monitor.hpp"
 #include "macros.hpp"
 #include "../managers/screenshare/ScreenshareManager.hpp"
 #include "pass/TexPassElement.hpp"
@@ -42,16 +42,16 @@
 #include "pass/RectPassElement.hpp"
 #include "pass/RendererHintsPassElement.hpp"
 #include "pass/SurfacePassElement.hpp"
-#include "debug/log/Logger.hpp"
+#include "../debug/log/Logger.hpp"
 #include "../protocols/ColorManagement.hpp"
 #include "../protocols/types/ContentType.hpp"
 #include "../helpers/MiscFunctions.hpp"
-#include "render/AsyncResourceGatherer.hpp"
-#include "render/Framebuffer.hpp"
-#include "render/OpenGL.hpp"
-#include "render/Texture.hpp"
-#include "render/pass/BorderPassElement.hpp"
-#include "render/pass/PreBlurElement.hpp"
+#include "AsyncResourceGatherer.hpp"
+#include "Framebuffer.hpp"
+#include "OpenGL.hpp"
+#include "Texture.hpp"
+#include "pass/BorderPassElement.hpp"
+#include "pass/PreBlurElement.hpp"
 #include <hyprutils/math/Mat3x3.hpp>
 #include <hyprutils/math/Region.hpp>
 #include <hyprutils/math/Vector2D.hpp>
@@ -1068,14 +1068,14 @@ void IHyprRenderer::drawTex(CTexPassElement* element, const CRegion& damage) {
             element->m_data.blockBlurOptimization.value_or(false) || !shouldUseNewBlurOptimizations(element->m_data.currentLS.lock(), m_renderData.currentWindow.lock());
 
         //   vvv TODO: layered blur fbs?
-        if (element->m_data.blockBlurOptimization) {
+        if (element->m_data.blockBlurOptimization.value_or(false)) {
             inverseOpaque.translate(box.pos());
             m_renderData.renderModif.applyToRegion(inverseOpaque);
             inverseOpaque.intersect(element->m_data.damage);
             element->m_data.blurredBG = blurMainFramebuffer(element->m_data.a, &inverseOpaque);
             m_renderData.currentFB->bind();
         } else
-            element->m_data.blurredBG = m_renderData.pMonitor->m_blurFB->getTexture();
+            element->m_data.blurredBG = m_renderData.pMonitor->m_blurFB ? m_renderData.pMonitor->m_blurFB->getTexture() : nullptr;
 
         draw(element, damage);
     } else
@@ -1687,6 +1687,8 @@ SP<ITexture> IHyprRenderer::loadAsset(const std::string& filename) {
 }
 
 SP<ITexture> IHyprRenderer::getBlurTexture(PHLMONITORREF pMonitor) {
+    if (!pMonitor->m_blurFB)
+        return nullptr;
     return pMonitor->m_blurFB->getTexture();
 }
 
@@ -2147,6 +2149,7 @@ void IHyprRenderer::setProjectionType(eRenderProjectionType projectionType) {
         case RPT_MONITOR: m_renderData.targetProjection = m_renderData.pMonitor->getTransformMatrix(); break;
         case RPT_MIRROR: m_renderData.targetProjection = getMirrorProjection(m_renderData.pMonitor); break;
         case RPT_FB: m_renderData.targetProjection = getFBProjection(m_renderData.pMonitor, m_renderData.fbSize); break;
+        case RPT_EXPORT: m_renderData.targetProjection = Mat3x3::identity(); break;
         default: UNREACHABLE();
     }
 }
@@ -2158,7 +2161,9 @@ Mat3x3 IHyprRenderer::getBoxProjection(const CBox& box, std::optional<eTransform
 }
 
 Mat3x3 IHyprRenderer::projectBoxToTarget(const CBox& box, std::optional<eTransform> transform) {
-    return m_renderData.pMonitor->getScaleMatrix().copy().multiply(getBoxProjection(box, transform));
+    return (m_renderData.projectionType == RPT_EXPORT ? Mat3x3::outputProjection(m_renderData.fbSize, HYPRUTILS_TRANSFORM_NORMAL) : m_renderData.pMonitor->getScaleMatrix())
+        .copy()
+        .multiply(getBoxProjection(box, transform));
 }
 
 SP<ITexture> IHyprRenderer::blurMainFramebuffer(float a, CRegion* originalDamage) {
@@ -2175,6 +2180,8 @@ void IHyprRenderer::preBlurForCurrentMonitor(CRegion* fakeDamage) {
     const auto blurredTex = blurMainFramebuffer(1, fakeDamage);
 
     // render onto blurFB
+    if (!m_renderData.pMonitor->m_blurFB)
+        return;
     m_renderData.pMonitor->m_blurFB->alloc(m_renderData.pMonitor->m_pixelSize.x, m_renderData.pMonitor->m_pixelSize.y, m_renderData.pMonitor->m_output->state->state().drmFormat);
     m_renderData.pMonitor->m_blurFB->bind();
 

@@ -422,7 +422,8 @@ SP<SColumnData> SScrollingData::atCenter() {
 }
 
 void SScrollingData::recalculate(bool forceInstant) {
-    if (!algorithm->m_parent->space()->workspace() || algorithm->m_parent->space()->workspace()->m_hasFullscreenWindow)
+    if (!algorithm->m_parent || !algorithm->m_parent->space() || !algorithm->m_parent->space()->workspace() || !algorithm->m_parent->space()->workspace()->m_monitor ||
+        algorithm->m_parent->space()->workspace()->m_hasFullscreenWindow)
         return;
 
     static const auto PFSONONE = CConfigValue<Hyprlang::INT>("scrolling:fullscreen_on_one_column");
@@ -875,8 +876,8 @@ void CScrollingAlgorithm::moveTargetTo(SP<ITarget> t, Math::eDirection dir, bool
                 switch (dir) {
                     case Math::DIRECTION_UP: return Math::DIRECTION_RIGHT;
                     case Math::DIRECTION_DOWN: return Math::DIRECTION_LEFT;
-                    case Math::DIRECTION_LEFT: return Math::DIRECTION_DOWN;
-                    case Math::DIRECTION_RIGHT: return Math::DIRECTION_UP;
+                    case Math::DIRECTION_LEFT: return Math::DIRECTION_UP;
+                    case Math::DIRECTION_RIGHT: return Math::DIRECTION_DOWN;
                     default: break;
                 }
 
@@ -886,8 +887,8 @@ void CScrollingAlgorithm::moveTargetTo(SP<ITarget> t, Math::eDirection dir, bool
                 switch (dir) {
                     case Math::DIRECTION_UP: return Math::DIRECTION_LEFT;
                     case Math::DIRECTION_DOWN: return Math::DIRECTION_RIGHT;
-                    case Math::DIRECTION_LEFT: return Math::DIRECTION_DOWN;
-                    case Math::DIRECTION_RIGHT: return Math::DIRECTION_UP;
+                    case Math::DIRECTION_LEFT: return Math::DIRECTION_UP;
+                    case Math::DIRECTION_RIGHT: return Math::DIRECTION_DOWN;
                     default: break;
                 }
 
@@ -1505,6 +1506,9 @@ eScrollDirection CScrollingAlgorithm::getDynamicDirection() {
 }
 
 CBox CScrollingAlgorithm::usableArea() {
+    if (!m_parent || !m_parent->space())
+        return {};
+
     CBox box = m_parent->space()->workArea();
 
     // doesn't matter, this happens when this algo is about to be destroyed

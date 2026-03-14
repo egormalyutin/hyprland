@@ -34,11 +34,12 @@ struct Layout::Tiled::SDwindleNodeData {
 
     void recalcSizePosRecursive(bool force = false, bool horizontalOverride = false, bool verticalOverride = false) {
         if (children[0]) {
-            static auto PSMARTSPLIT    = CConfigValue<Hyprlang::INT>("dwindle:smart_split");
-            static auto PPRESERVESPLIT = CConfigValue<Hyprlang::INT>("dwindle:preserve_split");
-            static auto PFLMULT        = CConfigValue<Hyprlang::FLOAT>("dwindle:split_width_multiplier");
+            static auto PSMARTSPLIT       = CConfigValue<Hyprlang::INT>("dwindle:smart_split");
+            static auto PPRESERVESPLIT    = CConfigValue<Hyprlang::INT>("dwindle:preserve_split");
+            static auto PFLMULT           = CConfigValue<Hyprlang::FLOAT>("dwindle:split_width_multiplier");
+            static auto PPRECISEMOUSEMOVE = CConfigValue<Hyprlang::INT>("dwindle:precise_mouse_move");
 
-            if (*PPRESERVESPLIT == 0 && *PSMARTSPLIT == 0)
+            if (*PPRESERVESPLIT == 0 && *PSMARTSPLIT == 0 && *PPRECISEMOUSEMOVE == 0)
                 splitTop = box.h * *PFLMULT > box.w;
 
             if (verticalOverride)
@@ -71,7 +72,7 @@ void CDwindleAlgorithm::newTarget(SP<ITarget> target) {
     addTarget(target);
 }
 
-void CDwindleAlgorithm::addTarget(SP<ITarget> target, bool newTarget) {
+void CDwindleAlgorithm::addTarget(SP<ITarget> target) {
     const auto WORK_AREA = m_parent->space()->workArea();
 
     const auto PNODE = m_dwindleNodesData.emplace_back(makeShared<SDwindleNodeData>());
@@ -159,6 +160,7 @@ void CDwindleAlgorithm::addTarget(SP<ITarget> target, bool newTarget) {
     static auto PERMANENTDIRECTIONOVERRIDE = CConfigValue<Hyprlang::INT>("dwindle:permanent_direction_override");
     static auto PSMARTSPLIT                = CConfigValue<Hyprlang::INT>("dwindle:smart_split");
     static auto PSPLITBIAS                 = CConfigValue<Hyprlang::INT>("dwindle:split_bias");
+    static auto PPRECISEMOUSEMOVE          = CConfigValue<Hyprlang::INT>("dwindle:precise_mouse_move");
 
     bool        horizontalOverride = false;
     bool        verticalOverride   = false;
@@ -184,7 +186,7 @@ void CDwindleAlgorithm::addTarget(SP<ITarget> target, bool newTarget) {
         // whether or not the override persists after opening one window
         if (*PERMANENTDIRECTIONOVERRIDE == 0)
             m_overrideDirection = Math::DIRECTION_DEFAULT;
-    } else if (*PSMARTSPLIT == 1 || m_overrideFocalPoint) {
+    } else if (*PSMARTSPLIT == 1 || (*PPRECISEMOUSEMOVE == 1 && g_layoutManager->dragController()->wasDraggingWindow())) {
         const auto PARENT_CENTER      = NEWPARENT->box.pos() + NEWPARENT->box.size() / 2;
         const auto PARENT_PROPORTIONS = NEWPARENT->box.h / NEWPARENT->box.w;
         const auto DELTA              = MOUSECOORDS - PARENT_CENTER;
@@ -215,7 +217,7 @@ void CDwindleAlgorithm::addTarget(SP<ITarget> target, bool newTarget) {
                 NEWPARENT->children[1] = OPENINGON;
             }
         }
-    } else if (*PFORCESPLIT == 0 || !newTarget) {
+    } else if (*PFORCESPLIT == 0 || m_overrideFocalPoint) {
         if ((SIDEBYSIDE && MOUSECOORDS.x < NEWPARENT->box.x + (NEWPARENT->box.w / 2.F)) || (!SIDEBYSIDE && MOUSECOORDS.y < NEWPARENT->box.y + (NEWPARENT->box.h / 2.F))) {
             // we are hovering over the first node, make PNODE first.
             NEWPARENT->children[1] = OPENINGON;
@@ -225,14 +227,12 @@ void CDwindleAlgorithm::addTarget(SP<ITarget> target, bool newTarget) {
             NEWPARENT->children[0] = OPENINGON;
             NEWPARENT->children[1] = PNODE;
         }
+    } else if (*PFORCESPLIT == 1) {
+        NEWPARENT->children[1] = OPENINGON;
+        NEWPARENT->children[0] = PNODE;
     } else {
-        if (*PFORCESPLIT == 1) {
-            NEWPARENT->children[1] = OPENINGON;
-            NEWPARENT->children[0] = PNODE;
-        } else {
-            NEWPARENT->children[0] = OPENINGON;
-            NEWPARENT->children[1] = PNODE;
-        }
+        NEWPARENT->children[0] = OPENINGON;
+        NEWPARENT->children[1] = PNODE;
     }
 
     // split in favor of a specific window
@@ -268,7 +268,7 @@ void CDwindleAlgorithm::addTarget(SP<ITarget> target, bool newTarget) {
 
 void CDwindleAlgorithm::movedTarget(SP<ITarget> target, std::optional<Vector2D> focalPoint) {
     m_overrideFocalPoint = focalPoint;
-    addTarget(target, false);
+    addTarget(target);
     m_overrideFocalPoint.reset();
 }
 

@@ -9,17 +9,17 @@
 #include "../protocols/core/DataDevice.hpp"
 #include "../protocols/core/Compositor.hpp"
 #include "../debug/HyprDebugOverlay.hpp"
-#include "helpers/Monitor.hpp"
+#include "../helpers/Monitor.hpp"
 #include "pass/TexPassElement.hpp"
 #include "pass/ClearPassElement.hpp"
 #include "pass/RectPassElement.hpp"
 #include "pass/SurfacePassElement.hpp"
-#include "debug/log/Logger.hpp"
+#include "../debug/log/Logger.hpp"
 #include "../protocols/types/ContentType.hpp"
-#include "render/OpenGL.hpp"
-#include "render/Renderer.hpp"
-#include "render/gl/GLFramebuffer.hpp"
-#include "render/gl/GLTexture.hpp"
+#include "OpenGL.hpp"
+#include "Renderer.hpp"
+#include "gl/GLFramebuffer.hpp"
+#include "gl/GLTexture.hpp"
 #include "decorations/CHyprDropShadowDecoration.hpp"
 
 #include <cstdint>
@@ -394,6 +394,8 @@ void CHyprGLRenderer::draw(CTextureMatteElement* element, const CRegion& damage)
 };
 
 SP<ITexture> CHyprGLRenderer::getBlurTexture(PHLMONITORREF pMonitor) {
+    if (!pMonitor->m_blurFB)
+        return nullptr;
     return pMonitor->m_blurFB->getTexture();
 }
 
