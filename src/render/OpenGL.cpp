@@ -889,10 +889,21 @@ void CHyprOpenGLImpl::applyScreenShader(const std::string& path) {
     if (path.empty() || path == STRVAL_EMPTY)
         return;
 
-    std::ifstream infile(absolutePath(path, g_pConfigManager->getMainConfigPath()));
+    std::string     absPath = absolutePath(path, g_pConfigManager->getMainConfigPath());
+
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(absPath, ec)) {
+        if (ec)
+            g_pConfigManager->addParseError("Screen shader parser: Failed to check screen shader path: " + ec.message());
+        else
+            g_pConfigManager->addParseError("Screen shader parser: Screen shader path is not a regular file");
+        return;
+    }
+
+    std::ifstream infile(absPath);
 
     if (!infile.good()) {
-        g_pConfigManager->addParseError("Screen shader parser: Screen shader path not found");
+        g_pConfigManager->addParseError("Screen shader parser: Failed to open screen shader");
         return;
     }
 
@@ -1355,8 +1366,8 @@ WP<CShader> CHyprOpenGLImpl::renderToFBInternal(const STextureRenderData& data, 
             const bool  needsSDRmod     = isSDR2HDR(SOURCE_IMAGE_DESCRIPTION->value(), TARGET_IMAGE_DESCRIPTION->value());
             const bool  needsHDRmod     = !needsSDRmod && isHDR2SDR(SOURCE_IMAGE_DESCRIPTION->value(), TARGET_IMAGE_DESCRIPTION->value());
             const float maxLuminance    = needsHDRmod ?
-                   SOURCE_IMAGE_DESCRIPTION->value().getTFMaxLuminance(-1) :
-                   (SOURCE_IMAGE_DESCRIPTION->value().luminances.max > 0 ? SOURCE_IMAGE_DESCRIPTION->value().luminances.max : SOURCE_IMAGE_DESCRIPTION->value().luminances.reference);
+                SOURCE_IMAGE_DESCRIPTION->value().getTFMaxLuminance(-1) :
+                (SOURCE_IMAGE_DESCRIPTION->value().luminances.max > 0 ? SOURCE_IMAGE_DESCRIPTION->value().luminances.max : SOURCE_IMAGE_DESCRIPTION->value().luminances.reference);
             const auto  dstMaxLuminance = TARGET_IMAGE_DESCRIPTION->value().luminances.max > 0 ? TARGET_IMAGE_DESCRIPTION->value().luminances.max : 10000;
 
             if (maxLuminance >= dstMaxLuminance * 1.01)
