@@ -310,6 +310,36 @@ namespace Config::Supplementary {
             .data        = SConfigOptionDescription::SFloatData{1, 0, 1},
         },
         SConfigOptionDescription{
+            .value       = "decoration:glow:enabled",
+            .description = "enable inner glow on windows",
+            .type        = CONFIG_OPTION_BOOL,
+            .data        = SConfigOptionDescription::SBoolData{false},
+        },
+        SConfigOptionDescription{
+            .value       = "decoration:glow:range",
+            .description = "glow range (size) in layout px",
+            .type        = CONFIG_OPTION_INT,
+            .data        = SConfigOptionDescription::SRangeData{10, 0, 100},
+        },
+        SConfigOptionDescription{
+            .value       = "decoration:glow:render_power",
+            .description = "in what power to render the falloff (more power, the faster the falloff) [1 - 4]",
+            .type        = CONFIG_OPTION_INT,
+            .data        = SConfigOptionDescription::SRangeData{3, 1, 4},
+        },
+        SConfigOptionDescription{
+            .value       = "decoration:glow:color",
+            .description = "glow's color. Alpha dictates glow's opacity.",
+            .type        = CONFIG_OPTION_COLOR,
+            .data        = SConfigOptionDescription::SColorData{0xee33ccff},
+        },
+        SConfigOptionDescription{
+            .value       = "decoration:glow:color_inactive",
+            .description = "inactive glow color. (if not set, will fall back to decoration:glow:color)",
+            .type        = CONFIG_OPTION_COLOR,
+            .data        = SConfigOptionDescription::SColorData{0x0033ccff},
+        },
+        SConfigOptionDescription{
             .value       = "decoration:dim_modal",
             .description = "enables dimming of parents of modal windows",
             .type        = CONFIG_OPTION_BOOL,
@@ -625,9 +655,9 @@ namespace Config::Supplementary {
             .value = "input:focus_on_close",
             .description =
                 "Controls the window focus behavior when a window is closed. When set to 0, focus will shift to the next window candidate. When set to 1, focus will shift "
-                "to the window under the cursor.",
+                "to the window under the cursor. When set to 2, focus will shift to the most recently used/active window.",
             .type = CONFIG_OPTION_CHOICE,
-            .data = SConfigOptionDescription::SChoiceData{0, "next,cursor"},
+            .data = SConfigOptionDescription::SChoiceData{0, "next,cursor,mru"},
         },
         SConfigOptionDescription{
             .value       = "input:mouse_refocus",
@@ -667,8 +697,8 @@ namespace Config::Supplementary {
         },
 
         /*
-     * input:touchpad:
-     */
+         * input:touchpad:
+         */
 
         SConfigOptionDescription{
             .value       = "input:touchpad:disable_while_typing",
@@ -1676,6 +1706,18 @@ namespace Config::Supplementary {
             .description = "Use experimental blurred bg blending",
             .type        = CONFIG_OPTION_BOOL,
             .data        = SConfigOptionDescription::SBoolData{false},
+        },
+        {
+            .value       = "render:use_fp16",
+            .description = "Use experimental internal FP16 buffer. 0 - disabled, 1 - on, 2 - auto (enabled in HDR mode)",
+            .type        = CONFIG_OPTION_INT,
+            .data        = SConfigOptionDescription::SRangeData{.value = 2, .min = 0, .max = 2},
+        },
+        {
+            .value       = "render:keep_unmodified_copy",
+            .description = "Keep umodified SDR frame copy for sreensharing. 0 - disabled, 1 - on, 2 - auto (enabled in HDR with SDR modifiers)",
+            .type        = CONFIG_OPTION_INT,
+            .data        = SConfigOptionDescription::SRangeData{.value = 2, .min = 0, .max = 2},
         },
 
         /*

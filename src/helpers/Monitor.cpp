@@ -44,6 +44,7 @@
 #include "debug/log/Logger.hpp"
 #include "debug/HyprNotificationOverlay.hpp"
 #include "MonitorFrameScheduler.hpp"
+#include <hyprutils/memory/UniquePtr.hpp>
 #include <hyprutils/string/String.hpp>
 #include <hyprutils/utils/ScopeGuard.hpp>
 #include <cstring>
@@ -58,6 +59,8 @@ using namespace Hyprutils::Utils;
 using namespace Hyprutils::OS;
 using enum NContentType::eContentType;
 using namespace NColorManagement;
+using namespace Render::GL;
+using namespace Monitor;
 
 CMonitor::CMonitor(SP<Aquamarine::IOutput> output_) : m_state(this), m_output(output_), m_imageDescription(DEFAULT_IMAGE_DESCRIPTION) {
     g_pAnimationManager->createAnimation(0.f, m_specialFade, Config::animationTree()->getAnimationPropertyConfig("specialWorkspaceIn"), AVARDAMAGE_NONE);
@@ -653,22 +656,28 @@ bool CMonitor::applyMonitorRule(Config::CMonitorRule&& pMonitorRule, bool force)
         force = true;
     }
 
-    // Check if the rule isn't already applied
-    // TODO: clean this up lol
-    if (!force && DELTALESSTHAN(m_pixelSize.x, RULE->m_resolution.x, 1) /* ↓ */
-        && DELTALESSTHAN(m_pixelSize.y, RULE->m_resolution.y, 1)        /* Resolution is the same */
-        && m_pixelSize.x > 1 && m_pixelSize.y > 1                       /* Active resolution is not invalid */
-        && DELTALESSTHAN(m_refreshRate, RULE->m_refreshRate, 1)         /* Refresh rate is the same */
-        && m_setScale == RULE->m_scale                                  /* Scale is the same */
-        && m_autoDir == RULE->m_autoDir                                 /* Auto direction is the same */
-        /* position is set correctly */
-        && ((DELTALESSTHAN(m_position.x, RULE->m_offset.x, 1) && DELTALESSTHAN(m_position.y, RULE->m_offset.y, 1)) || RULE->m_offset == Vector2D(-INT32_MAX, -INT32_MAX))
-        /* other properties hadn't changed */
-        && m_transform == RULE->m_transform && RULE->m_enable10bit == m_enabled10bit && RULE->m_cmType == m_cmType && RULE->m_sdrSaturation == m_sdrSaturation &&
+    const bool sameResolution =
+        DELTALESSTHAN(m_pixelSize.x, RULE->m_resolution.x, 1) && DELTALESSTHAN(m_pixelSize.y, RULE->m_resolution.y, 1) && m_pixelSize.x > 1 && m_pixelSize.y > 1;
+
+    const bool sameRefreshRate = DELTALESSTHAN(m_refreshRate, RULE->m_refreshRate, 1);
+
+    const bool sameScale   = m_setScale == RULE->m_scale;
+    const bool sameAutoDir = m_autoDir == RULE->m_autoDir;
+
+    const bool samePosition =
+        (DELTALESSTHAN(m_position.x, RULE->m_offset.x, 1) && DELTALESSTHAN(m_position.y, RULE->m_offset.y, 1)) || RULE->m_offset == Vector2D(-INT32_MAX, -INT32_MAX);
+
+    const bool sameTransform  = m_transform == RULE->m_transform;
+    const bool sameColorProps = RULE->m_enable10bit == m_enabled10bit && RULE->m_cmType == m_cmType && RULE->m_sdrSaturation == m_sdrSaturation &&
         RULE->m_sdrBrightness == m_sdrBrightness && RULE->m_sdrMinLuminance == m_minLuminance && RULE->m_sdrMaxLuminance == m_maxLuminance &&
         RULE->m_supportsWideColor == m_supportsWideColor && RULE->m_supportsHDR == m_supportsHDR && RULE->m_minLuminance == m_minLuminance &&
-        RULE->m_maxLuminance == m_maxLuminance && RULE->m_maxAvgLuminance == m_maxAvgLuminance && !std::memcmp(&m_customDrmMode, &RULE->m_drmMode, sizeof(m_customDrmMode)) &&
-        m_reservedArea == RULE->m_reservedArea) {
+        RULE->m_maxLuminance == m_maxLuminance && RULE->m_maxAvgLuminance == m_maxAvgLuminance;
+
+    const bool sameDrmMode = !std::memcmp(&m_customDrmMode, &RULE->m_drmMode, sizeof(m_customDrmMode));
+
+    const bool sameReservedArea = m_reservedArea == RULE->m_reservedArea;
+
+    if (!force && sameResolution && sameRefreshRate && sameScale && sameAutoDir && samePosition && sameTransform && sameColorProps && sameDrmMode && sameReservedArea) {
 
         Log::logger->log(Log::DEBUG, "Not applying a new rule to {} because it's already applied!", m_name);
 
@@ -1058,12 +1067,7 @@ bool CMonitor::applyMonitorRule(Config::CMonitorRule&& pMonitorRule, bool force)
     updateMatrix();
 
     if ((WAS10B != m_enabled10bit || OLDRES != m_pixelSize)) {
-        m_mirrorFB.reset();
-        m_offloadFB.reset();
-        m_mirrorSwapFB.reset();
-        m_blurFB.reset();
-        m_offMainFB.reset();
-        m_stencilTex.reset();
+        m_resources.reset(); // TODO skip for 10bit change and fp16?
 
         if (g_pHyprRenderer && g_pHyprRenderer->glBackend())
             g_pHyprRenderer->glBackend()->destroyMonitorResources(m_self);
@@ -1987,7 +1991,7 @@ bool CMonitor::attemptDirectScanout() {
 
     // multigpu needs a fence to trigger fence syncing blits and also committing with the recreated dgpu fence
     if (!DRM::sameGpu(m_output->getBackend()->preferredAllocator()->drmFD(), g_pCompositor->m_drm.fd) && g_pHyprRenderer->explicitSyncSupported()) {
-        auto sync = CEGLSync::create();
+        auto sync = g_pHyprRenderer->createSyncFDManager();
 
         if (sync->fd().isValid()) {
             m_inFence = sync->takeFd();
@@ -2412,4 +2416,39 @@ bool CMonitorState::updateSwapchain() {
     options.length  = 3;
     options.size    = MODE->pixelSize;
     return m_owner->m_output->swapchain->reconfigure(options);
+}
+
+bool CMonitor::needsACopyFB() {
+    return !m_mirrors.empty() || Screenshare::mgr()->isOutputBeingSSd(m_self.lock());
+}
+
+bool CMonitor::needsUnmodifiedCopy() {
+    static const auto PKEEP = CConfigValue<Hyprlang::INT>("render:keep_unmodified_copy");
+    if (*PKEEP == 1)
+        return true;
+
+    const bool HAS_MODS = m_sdrMinLuminance != SDR_MIN_LUMINANCE || m_sdrMaxLuminance != SDR_MAX_LUMINANCE || (m_sdrBrightness > 0 && m_sdrBrightness != 1.0) ||
+        (m_sdrSaturation > 0 && m_sdrSaturation != 1.0);
+
+    if (!HAS_MODS)
+        return false;
+
+    if (m_imageDescription->value().transferFunction != CM_TRANSFER_FUNCTION_ST2084_PQ && m_imageDescription->value().transferFunction != CM_TRANSFER_FUNCTION_HLG)
+        return false;
+
+    return *PKEEP == 2 ? true : needsACopyFB();
+}
+
+bool CMonitor::useFP16() {
+    static const auto PFP16 = CConfigValue<Hyprlang::INT>("render:use_fp16");
+    return *PFP16 == 1 || (*PFP16 == 2 && m_imageDescription->value().transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ);
+}
+
+WP<CMonitorResources> CMonitor::resources() {
+    const auto DRM_FORMAT = useFP16() ? DRM_FORMAT_ABGR16161616F : m_output->state->state().drmFormat;
+
+    if (!m_resources || m_resources->m_drmFormat != DRM_FORMAT || m_resources->m_size != m_pixelSize)
+        m_resources = makeUnique<CMonitorResources>(m_self, DRM_FORMAT, m_pixelSize, useFP16() ? LINEAR_IMAGE_DESCRIPTION : m_imageDescription);
+
+    return m_resources;
 }

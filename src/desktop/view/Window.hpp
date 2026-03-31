@@ -227,6 +227,9 @@ namespace Desktop::View {
         // animated shadow color
         PHLANIMVAR<CHyprColor> m_realShadowColor;
 
+        // animated glow color
+        PHLANIMVAR<CHyprColor> m_realGlowColor;
+
         // animated tint
         PHLANIMVAR<float> m_dimPercent;
 
@@ -255,7 +258,7 @@ namespace Desktop::View {
         const uint64_t m_stableID = 0x2137;
 
         // snapshots
-        SP<IFramebuffer> m_snapshotFB;
+        SP<Render::IFramebuffer> m_snapshotFB;
 
         // ANR
         PHLANIMVAR<float> m_notRespondingTint;

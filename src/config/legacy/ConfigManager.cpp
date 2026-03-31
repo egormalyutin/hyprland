@@ -51,6 +51,7 @@
 #include "../../event/EventBus.hpp"
 
 #include "../../protocols/types/ContentType.hpp"
+#include "render/types.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <hyprutils/path/Path.hpp>
@@ -583,7 +584,7 @@ CConfigManager::CConfigManager() {
     registerConfigVar("debug:disable_logs", Hyprlang::INT{1});
     registerConfigVar("debug:disable_time", Hyprlang::INT{1});
     registerConfigVar("debug:enable_stdout_logs", Hyprlang::INT{0});
-    registerConfigVar("debug:damage_tracking", {sc<Hyprlang::INT>(DAMAGE_TRACKING_FULL)});
+    registerConfigVar("debug:damage_tracking", {sc<Hyprlang::INT>(Render::DAMAGE_TRACKING_FULL)});
     registerConfigVar("debug:manual_crash", Hyprlang::INT{0});
     registerConfigVar("debug:suppress_errors", Hyprlang::INT{0});
     registerConfigVar("debug:error_limit", Hyprlang::INT{5});
@@ -626,6 +627,11 @@ CConfigManager::CConfigManager() {
     registerConfigVar("decoration:shadow:sharp", Hyprlang::INT{0});
     registerConfigVar("decoration:shadow:color", Hyprlang::INT{0xee1a1a1a});
     registerConfigVar("decoration:shadow:color_inactive", Hyprlang::INT{-1});
+    registerConfigVar("decoration:glow:enabled", Hyprlang::INT{0});
+    registerConfigVar("decoration:glow:range", Hyprlang::INT{10});
+    registerConfigVar("decoration:glow:render_power", Hyprlang::INT{3});
+    registerConfigVar("decoration:glow:color", Hyprlang::INT{0xee33ccff});
+    registerConfigVar("decoration:glow:color_inactive", Hyprlang::INT{0x0033ccff});
     registerConfigVar("decoration:dim_inactive", Hyprlang::INT{0});
     registerConfigVar("decoration:dim_modal", Hyprlang::INT{1});
     registerConfigVar("decoration:dim_strength", {0.5f});
@@ -817,6 +823,8 @@ CConfigManager::CConfigManager() {
     registerConfigVar("render:commit_timing_enabled", Hyprlang::INT{1});
     registerConfigVar("render:icc_vcgt_enabled", Hyprlang::INT{1});
     registerConfigVar("render:use_shader_blur_blend", Hyprlang::INT{0});
+    registerConfigVar("render:use_fp16", Hyprlang::INT{2});
+    registerConfigVar("render:keep_unmodified_copy", Hyprlang::INT{2});
 
     registerConfigVar("ecosystem:no_update_news", Hyprlang::INT{0});
     registerConfigVar("ecosystem:no_donation_nag", Hyprlang::INT{0});
