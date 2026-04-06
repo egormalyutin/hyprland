@@ -658,12 +658,21 @@ void CWindow::onMap() {
         false);
 
     m_realSize->setUpdateCallback([this](auto) {
-        if (m_isMapped)
-            m_events.resize.emit();
+        if (!m_isMapped)
+            return;
+
+        updateWindowDecos();
+
+        m_events.resize.emit();
     });
 
     m_realPosition->setUpdateCallback([this](auto) {
-        if (m_isMapped && m_monitor != m_prevMonitor) {
+        if (!m_isMapped)
+            return;
+
+        updateWindowDecos();
+
+        if (m_monitor != m_prevMonitor) {
             m_prevMonitor = m_monitor;
             m_events.monitorChanged.emit();
         }
@@ -821,15 +830,25 @@ void CWindow::updateWindowData(const Config::CWorkspaceRule& workspaceRule) {
     m_ruleApplicator->rounding().matchOptional(workspaceRule.m_noRounding.value_or(false) ? std::optional<Hyprlang::INT>(0) : std::nullopt,
                                                Desktop::Types::PRIORITY_WORKSPACE_RULE);
     m_ruleApplicator->noShadow().matchOptional(workspaceRule.m_noShadow, Desktop::Types::PRIORITY_WORKSPACE_RULE);
+
+    m_borderSizeCacheDirty = true;
 }
 
 int CWindow::getRealBorderSize() const {
-    if ((m_workspace && isEffectiveInternalFSMode(FSMODE_FULLSCREEN)) || !m_ruleApplicator->decorate().valueOrDefault())
+    if (!m_borderSizeCacheDirty)
+        return m_cachedBorderSize;
+
+    if ((m_workspace && isEffectiveInternalFSMode(FSMODE_FULLSCREEN)) || !m_ruleApplicator->decorate().valueOrDefault()) {
+        m_cachedBorderSize     = 0;
+        m_borderSizeCacheDirty = false;
         return 0;
+    }
 
     static auto PBORDERSIZE = CConfigValue<Hyprlang::INT>("general:border_size");
 
-    return m_ruleApplicator->borderSize().valueOr(*PBORDERSIZE);
+    m_cachedBorderSize     = m_ruleApplicator->borderSize().valueOr(*PBORDERSIZE);
+    m_borderSizeCacheDirty = false;
+    return m_cachedBorderSize;
 }
 
 float CWindow::getScrollMouse() {
@@ -1359,7 +1378,7 @@ Vector2D CWindow::realToReportPosition() {
     if (!m_isX11)
         return m_realPosition->goal();
 
-    return g_pXWaylandManager->waylandToXWaylandCoords(m_realPosition->goal());
+    return g_pXWaylandManager->waylandToXWaylandCoords(m_realPosition->goal(), m_monitor.lock());
 }
 
 Vector2D CWindow::xwaylandSizeToReal(Vector2D size) {
@@ -1373,7 +1392,7 @@ Vector2D CWindow::xwaylandSizeToReal(Vector2D size) {
 }
 
 Vector2D CWindow::xwaylandPositionToReal(Vector2D pos) {
-    return g_pXWaylandManager->xwaylandToWaylandCoords(pos);
+    return g_pXWaylandManager->xwaylandToWaylandCoords(pos, m_monitor.lock());
 }
 
 void CWindow::updateX11SurfaceScale() {
@@ -1524,6 +1543,8 @@ Vector2D CWindow::getReportedSize() {
 }
 
 void CWindow::updateDecorationValues() {
+    m_borderSizeCacheDirty = true;
+
     static auto PACTIVECOL              = CConfigValue<Hyprlang::CUSTOMTYPE>("general:col.active_border");
     static auto PINACTIVECOL            = CConfigValue<Hyprlang::CUSTOMTYPE>("general:col.inactive_border");
     static auto PNOGROUPACTIVECOL       = CConfigValue<Hyprlang::CUSTOMTYPE>("general:col.nogroup_border_active");
@@ -2441,9 +2462,8 @@ void CWindow::unmanagedSetGeometry() {
 
     static auto PXWLFORCESCALEZERO = CConfigValue<Hyprlang::INT>("xwayland:force_zero_scaling");
 
-    const auto  LOGICALPOS = g_pXWaylandManager->xwaylandToWaylandCoords(m_xwaylandSurface->m_geometry.pos());
-
     const auto  PMONITOR       = m_monitor.lock();
+    const auto  LOGICALPOS     = g_pXWaylandManager->xwaylandToWaylandCoords(m_xwaylandSurface->m_geometry.pos(), PMONITOR);
     const auto  XWLSCALE       = (*PXWLFORCESCALEZERO && PMONITOR) ? PMONITOR->m_scale : 1.0;
     const auto  LOGICALGEOSIZE = m_xwaylandSurface->m_geometry.size() / XWLSCALE;
 

@@ -317,7 +317,9 @@ void IHyprRenderer::renderWorkspaceWindowsFullscreen(PHLMONITOR pMonitor, PHLWOR
 
     Event::bus()->m_events.render.stage.emit(RENDER_PRE_WINDOWS);
 
-    // loop over the tiled windows that are fading out
+    // pre-filter renderable windows once for the tiled + floating passes
+    std::vector<PHLWINDOW> windows;
+    windows.reserve(g_pCompositor->m_windows.size());
     for (auto const& w : g_pCompositor->m_windows) {
         if (!shouldRenderWindow(w, pMonitor))
             continue;
@@ -325,7 +327,15 @@ void IHyprRenderer::renderWorkspaceWindowsFullscreen(PHLMONITOR pMonitor, PHLWOR
         if (w->m_alpha->value() == 0.f)
             continue;
 
-        if (w->isFullscreen() || w->m_isFloating)
+        if (w->isFullscreen())
+            continue;
+
+        windows.emplace_back(w);
+    }
+
+    // tiled windows that are fading out
+    for (auto const& w : windows) {
+        if (w->m_isFloating)
             continue;
 
         if (pWorkspace->m_isSpecialWorkspace != w->onSpecialWorkspace())
@@ -335,14 +345,8 @@ void IHyprRenderer::renderWorkspaceWindowsFullscreen(PHLMONITOR pMonitor, PHLWOR
     }
 
     // and floating ones too
-    for (auto const& w : g_pCompositor->m_windows) {
-        if (!shouldRenderWindow(w, pMonitor))
-            continue;
-
-        if (w->m_alpha->value() == 0.f)
-            continue;
-
-        if (w->isFullscreen() || !w->m_isFloating)
+    for (auto const& w : windows) {
+        if (!w->m_isFloating)
             continue;
 
         if (w->m_monitor == pWorkspace->m_monitor && pWorkspace->m_isSpecialWorkspace != w->onSpecialWorkspace())
@@ -922,7 +926,6 @@ void IHyprRenderer::renderLayer(PHLLS pLayer, PHLMONITOR pMonitor, const Time::s
     renderdata.blockBlurOptimization            = pLayer->m_layer == ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM || pLayer->m_layer == ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND;
 
     renderdata.clipBox = CBox{0, 0, pMonitor->m_size.x, pMonitor->m_size.y}.scale(pMonitor->m_scale);
-
     if (renderdata.blur && pLayer->m_ruleApplicator->ignoreAlpha().hasValue()) {
         renderdata.discardMode |= DISCARD_ALPHA;
         renderdata.discardOpacity = pLayer->m_ruleApplicator->ignoreAlpha().valueOrDefault();
@@ -950,7 +953,13 @@ void IHyprRenderer::renderLayer(PHLLS pLayer, PHLMONITOR pMonitor, const Time::s
     renderdata.dontRound       = true;
     renderdata.popup           = true;
     renderdata.blur            = pLayer->m_ruleApplicator->blurPopups().valueOrDefault();
-    renderdata.surfaceCounter  = 0;
+    renderdata.discardMode &= ~DISCARD_ALPHA;
+    renderdata.discardOpacity = 0.F;
+    if (renderdata.blur && pLayer->m_ruleApplicator->ignoreAlpha().hasValue()) {
+        renderdata.discardMode |= DISCARD_ALPHA;
+        renderdata.discardOpacity = pLayer->m_ruleApplicator->ignoreAlpha().valueOrDefault();
+    }
+    renderdata.surfaceCounter = 0;
     if (popups) {
         pLayer->m_popupHead->breadthfirst(
             [this, &renderdata](WP<Desktop::View::CPopup> popup, void* data) {
@@ -1623,6 +1632,7 @@ void IHyprRenderer::renderSessionLockMissing(PHLMONITOR pMonitor) {
 
 bool IHyprRenderer::beginRender(PHLMONITOR pMonitor, CRegion& damage, eRenderMode mode, SP<IHLBuffer> buffer, SP<IFramebuffer> fb, bool simple) {
     m_renderPass.clear();
+    clearCMSettingsCache();
     m_renderMode          = mode;
     m_renderData.pMonitor = pMonitor;
 
@@ -1776,8 +1786,22 @@ static bool isHDR2SDR(const NColorManagement::SImageDescription& imageDescriptio
          targetImageDescription.transferFunction == NColorManagement::CM_TRANSFER_FUNCTION_GAMMA22);
 }
 
+void IHyprRenderer::clearCMSettingsCache() {
+    m_cmSettingsCache.clear();
+}
+
 SCMSettings IHyprRenderer::getCMSettings(const NColorManagement::PImageDescription imageDescription, const NColorManagement::PImageDescription targetImageDescription,
                                          SP<CWLSurfaceResource> surface, bool modifySDR, float sdrMinLuminance, int sdrMaxLuminance) {
+    const auto srcId = imageDescription->id();
+    const auto dstId = targetImageDescription->id();
+    void*      sPtr  = m_renderData.surface.get();
+
+    for (auto const& entry : m_cmSettingsCache) {
+        if (entry.srcDescId == srcId && entry.dstDescId == dstId && entry.surfacePtr == sPtr && entry.modifySDR == modifySDR && entry.sdrMinLuminance == sdrMinLuminance &&
+            entry.sdrMaxLuminance == sdrMaxLuminance)
+            return entry.settings;
+    }
+
     const auto                          sdrEOTF = NTransferFunction::fromConfig();
     NColorManagement::eTransferFunction srcTF;
 
@@ -1810,7 +1834,7 @@ SCMSettings IHyprRenderer::getCMSettings(const NColorManagement::PImageDescripti
         ((m_renderData.pMonitor->m_sdrSaturation > 0 && m_renderData.pMonitor->m_sdrSaturation != 1.0f) ||
          (m_renderData.pMonitor->m_sdrBrightness > 0 && m_renderData.pMonitor->m_sdrBrightness != 1.0f));
 
-    return {
+    auto result = SCMSettings{
         .sourceTF        = srcTF,
         .targetTF        = targetImageDescription->value().transferFunction,
         .srcTFRange      = {.min = imageDescription->value().getTFMinLuminance(needsSDRmod ? sdrMinLuminance : -1),
@@ -1829,6 +1853,10 @@ SCMSettings IHyprRenderer::getCMSettings(const NColorManagement::PImageDescripti
         .sdrSaturation           = needsSDRmod && m_renderData.pMonitor->m_sdrSaturation > 0 ? m_renderData.pMonitor->m_sdrSaturation : 1.0f,
         .sdrBrightnessMultiplier = needsSDRmod && m_renderData.pMonitor->m_sdrBrightness > 0 ? m_renderData.pMonitor->m_sdrBrightness : 1.0f,
     };
+
+    m_cmSettingsCache.push_back({srcId, dstId, sPtr, modifySDR, sdrMinLuminance, sdrMaxLuminance, result});
+
+    return result;
 }
 
 void IHyprRenderer::renderMirrored() {
@@ -1916,21 +1944,24 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
         return;
 
     // tearing and DS first
-    bool shouldTear = pMonitor->updateTearing();
+    bool       shouldTear              = pMonitor->updateTearing();
+    const bool canAttemptDirectScanout = pMonitor->canAttemptDirectScanoutFast();
 
-    if (pMonitor->attemptDirectScanout()) {
-        pMonitor->m_directScanoutIsActive = true;
-        return;
-    } else if (!pMonitor->m_lastScanout.expired() || pMonitor->m_directScanoutIsActive) {
-        Log::logger->log(Log::DEBUG, "Left a direct scanout.");
-        pMonitor->m_lastScanout.reset();
-        pMonitor->m_directScanoutIsActive = false;
+    if (canAttemptDirectScanout) {
+        if (pMonitor->attemptDirectScanout()) {
+            pMonitor->m_directScanoutIsActive = true;
+            return;
+        } else if (!pMonitor->m_lastScanout.expired() || pMonitor->m_directScanoutIsActive) {
+            Log::logger->log(Log::DEBUG, "Left a direct scanout.");
+            pMonitor->m_lastScanout.reset();
+            pMonitor->m_directScanoutIsActive = false;
 
-        // reset DRM format, but only if needed since it might modeset
-        if (pMonitor->m_output->state->state().drmFormat != pMonitor->m_prevDrmFormat)
-            pMonitor->m_output->state->setFormat(pMonitor->m_prevDrmFormat);
+            // reset DRM format, but only if needed since it might modeset
+            if (pMonitor->m_output->state->state().drmFormat != pMonitor->m_prevDrmFormat)
+                pMonitor->m_output->state->setFormat(pMonitor->m_prevDrmFormat);
 
-        pMonitor->m_drmFormat = pMonitor->m_prevDrmFormat;
+            pMonitor->m_drmFormat = pMonitor->m_prevDrmFormat;
+        }
     }
 
     Event::bus()->m_events.render.pre.emit(pMonitor);
@@ -1952,8 +1983,9 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
 
     pMonitor->m_renderingActive = true;
 
-    // we need to cleanup fading out when rendering the appropriate context
-    g_pCompositor->cleanupFadingOut(pMonitor->m_id);
+    // Most frames have no fading-out windows or layers for this monitor.
+    if (!g_pCompositor->m_windowsFadingOut.empty() || !g_pCompositor->m_surfacesFadingOut.empty())
+        g_pCompositor->cleanupFadingOut(pMonitor->m_id);
 
     // TODO: this is getting called with extents being 0,0,0,0 should it be?
     // potentially can save on resources.
@@ -1969,10 +2001,9 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
         zoomLock = true;
     }
 
-    if (pMonitor == g_pCompositor->getMonitorFromCursor())
+    m_renderData.mouseZoomFactor = 1.f;
+    if (ZOOMFACTOR != 1.f && pMonitor == g_pCompositor->getMonitorFromCursor())
         m_renderData.mouseZoomFactor = std::clamp(ZOOMFACTOR, 1.f, INFINITY);
-    else
-        m_renderData.mouseZoomFactor = 1.f;
 
     if (pMonitor->m_zoomAnimProgress->value() != 1) {
         m_renderData.mouseZoomFactor    = 2.0 - pMonitor->m_zoomAnimProgress->value(); // 2x zoom -> 1x zoom
@@ -2549,10 +2580,14 @@ void IHyprRenderer::damageSurface(SP<CWLSurfaceResource> pSurface, double x, dou
 
     damageBox.translate({x, y});
 
-    CRegion damageBoxForEach;
+    const auto EXTENTS = damageBox.getExtents();
+
+    CRegion    damageBoxForEach;
 
     for (auto const& m : g_pCompositor->m_monitors) {
         if (!m->m_output)
+            continue;
+        if (!EXTENTS.overlaps(m->logicalBox()))
             continue;
 
         damageBoxForEach.set(damageBox);
@@ -2585,9 +2620,6 @@ void IHyprRenderer::damageWindow(PHLWINDOW pWindow, bool forceFull) {
             m->addDamage(fixedDamageBox);
         }
     }
-
-    for (auto const& wd : pWindow->m_windowDecorations)
-        wd->damageEntire();
 
     static auto PLOGDAMAGE = CConfigValue<Hyprlang::INT>("debug:log_damage");
 
@@ -2891,6 +2923,9 @@ bool IHyprRenderer::isMgpu() {
 void IHyprRenderer::addWindowToRenderUnfocused(PHLWINDOW window) {
     static auto PFPS = CConfigValue<Hyprlang::INT>("misc:render_unfocused_fps");
 
+    if (*PFPS <= 0)
+        return;
+
     if (std::ranges::find(m_renderUnfocused, window) != m_renderUnfocused.end())
         return;
 
@@ -3177,8 +3212,12 @@ void IHyprRenderer::renderSnapshot(WP<Desktop::View::CPopup> popup) {
     data.blur                  = SHOULD_BLUR;
     data.blurA                 = sqrt(popup->m_alpha->value()); // sqrt makes the blur fadeout more realistic.
     data.blockBlurOptimization = SHOULD_BLUR;                   // force no xray on this (popups never have xray)
-    if (SHOULD_BLUR)
-        data.ignoreAlpha = std::max(*PBLURIGNOREA, 0.01F); /* ignore the alpha 0 regions */
+    if (SHOULD_BLUR) {
+        if (const auto PLAYER = popup->layerOwner(); PLAYER && PLAYER->m_ruleApplicator->ignoreAlpha().hasValue())
+            data.ignoreAlpha = std::max(PLAYER->m_ruleApplicator->ignoreAlpha().valueOrDefault(), 0.01F);
+        else
+            data.ignoreAlpha = std::max(*PBLURIGNOREA, 0.01F); /* ignore the alpha 0 regions */
+    }
 
     m_renderPass.add(makeUnique<CTexPassElement>(std::move(data)));
 }
