@@ -72,9 +72,9 @@
 #include "managers/WelcomeManager.hpp"
 #include "render/AsyncResourceGatherer.hpp"
 #include "plugins/PluginSystem.hpp"
-#include "hyprerror/HyprError.hpp"
+#include "errorOverlay/Overlay.hpp"
 #include "notification/NotificationOverlay.hpp"
-#include "debug/HyprDebugOverlay.hpp"
+#include "debug/Overlay.hpp"
 #include "helpers/MonitorFrameScheduler.hpp"
 #include "i18n/Engine.hpp"
 #include "layout/LayoutManager.hpp"
@@ -591,7 +591,7 @@ void CCompositor::cleanup() {
     g_pCursorManager.reset();
     g_pPluginSystem.reset();
     Notification::overlay().reset();
-    g_pDebugOverlay.reset();
+    Debug::overlay().reset();
     g_pEventManager.reset();
     g_pSessionLockManager.reset();
     g_pHyprRenderer.reset();
@@ -600,7 +600,7 @@ void CCompositor::cleanup() {
     Render::g_pShaderLoader.reset();
     Config::mgr().reset();
     g_layoutManager.reset();
-    g_pHyprError.reset();
+    ErrorOverlay::overlay().reset();
     g_pKeybindManager.reset();
     g_pXWaylandManager.reset();
     g_pPointerManager.reset();
@@ -643,8 +643,8 @@ void CCompositor::initManagers(eManagersInitStage stage) {
             if (!Config::initConfigManager())
                 exit(1);
 
-            Log::logger->log(Log::DEBUG, "Creating the CHyprError!");
-            g_pHyprError = makeUnique<CHyprError>();
+            Log::logger->log(Log::DEBUG, "Creating the Error Overlay!");
+            ErrorOverlay::overlay();
 
             Log::logger->log(Log::DEBUG, "Creating the LayoutManager!");
             g_layoutManager = makeUnique<Layout::CLayoutManager>();
@@ -694,8 +694,8 @@ void CCompositor::initManagers(eManagersInitStage stage) {
             Log::logger->log(Log::DEBUG, "Creating the SessionLockManager!");
             g_pSessionLockManager = makeUnique<CSessionLockManager>();
 
-            Log::logger->log(Log::DEBUG, "Creating the HyprDebugOverlay!");
-            g_pDebugOverlay = makeUnique<CHyprDebugOverlay>();
+            Log::logger->log(Log::DEBUG, "Creating the Debug Overlay!");
+            Debug::overlay();
 
             Log::logger->log(Log::DEBUG, "Creating the NotificationOverlay!");
             Notification::overlay();
@@ -895,7 +895,7 @@ bool CCompositor::monitorExists(PHLMONITOR pMonitor) {
     return std::ranges::any_of(m_realMonitors, [&](const PHLMONITOR& m) { return m == pMonitor; });
 }
 
-PHLWINDOW CCompositor::vectorToWindowUnified(const Vector2D& pos, uint8_t properties, PHLWINDOW pIgnoreWindow) {
+PHLWINDOW CCompositor::vectorToWindowUnified(const Vector2D& pos, uint16_t properties, PHLWINDOW pIgnoreWindow) {
     const auto PMONITOR = getMonitorFromVector(pos);
     if (!PMONITOR)
         return nullptr;
@@ -905,8 +905,12 @@ PHLWINDOW CCompositor::vectorToWindowUnified(const Vector2D& pos, uint8_t proper
     static auto PBORDERGRABEXTEND    = CConfigValue<Hyprlang::INT>("general:extend_border_grab_area");
     static auto PSPECIALFALLTHRU     = CConfigValue<Hyprlang::INT>("input:special_fallthrough");
     static auto PMODALPARENTBLOCKING = CConfigValue<Hyprlang::INT>("general:modal_parent_blocking");
+    static auto PFOLLOWMOUSESHRINK   = CConfigValue<Hyprlang::INT>("input:follow_mouse_shrink");
     const auto  BORDER_GRAB_AREA     = *PRESIZEONBORDER ? *PBORDERSIZE + *PBORDERGRABEXTEND : 0;
     const bool  ONLY_PRIORITY        = properties & Desktop::View::FOCUS_PRIORITY;
+    const bool  FOLLOW_MOUSE_CHECK   = properties & Desktop::View::FOLLOW_MOUSE_CHECK;
+    const auto  HITBOX_SHRINK        = FOLLOW_MOUSE_CHECK ? *PFOLLOWMOUSESHRINK : 0;
+    const auto  LASTFOCUSED          = Desktop::focusState()->window();
 
     const auto  isShadowedByModal = [](PHLWINDOW w) -> bool {
         return *PMODALPARENTBLOCKING && w->m_xdgSurface && w->m_xdgSurface->m_toplevel && w->m_xdgSurface->m_toplevel->anyChildModal();
@@ -922,6 +926,8 @@ PHLWINDOW CCompositor::vectorToWindowUnified(const Vector2D& pos, uint8_t proper
                 w != pIgnoreWindow && !isShadowedByModal(w)) {
                 const auto BB  = w->getWindowBoxUnified(properties);
                 CBox       box = BB.copy().expand(!w->isX11OverrideRedirect() ? BORDER_GRAB_AREA : 0);
+                if (HITBOX_SHRINK > 0 && w != LASTFOCUSED)
+                    box = box.copy().expand(-HITBOX_SHRINK);
                 if (box.containsPoint(pos))
                     return w;
 
@@ -964,6 +970,8 @@ PHLWINDOW CCompositor::vectorToWindowUnified(const Vector2D& pos, uint8_t proper
 
                     const auto BB  = w->getWindowBoxUnified(properties);
                     CBox       box = BB.copy().expand(!w->isX11OverrideRedirect() ? BORDER_GRAB_AREA : 0);
+                    if (HITBOX_SHRINK > 0 && w != LASTFOCUSED)
+                        box = box.copy().expand(-HITBOX_SHRINK);
                     if (box.containsPoint(pos)) {
 
                         if (w->m_isX11 && w->isX11OverrideRedirect() && !w->m_xwaylandSurface->wantsFocus()) {
@@ -1095,6 +1103,8 @@ PHLWINDOW CCompositor::vectorToWindowUnified(const Vector2D& pos, uint8_t proper
                     if (isWindowCloseToWorkAreaEdge(Math::eDirection::DIRECTION_DOWN))
                         box.height += BORDER_GRAB_AREA;
                 }
+                if (HITBOX_SHRINK > 0 && w != LASTFOCUSED)
+                    box = box.copy().expand(-HITBOX_SHRINK);
                 if (box.containsPoint(pos))
                     return w;
             }
@@ -3026,7 +3036,7 @@ void CCompositor::onNewMonitor(SP<Aquamarine::IOutput> output) {
 PImageDescription CCompositor::getPreferredImageDescription() {
     if (!PROTO::colorManagement) {
         Log::logger->log(Log::ERR, "FIXME: color management protocol is not enabled, returning empty image description");
-        return DEFAULT_IMAGE_DESCRIPTION;
+        return getDefaultImageDescription();
     }
     Log::logger->log(Log::WARN, "FIXME: color management protocol is enabled, determine correct preferred image description");
     // should determine some common settings to avoid unnecessary transformations while keeping maximum displayable precision
@@ -3036,7 +3046,7 @@ PImageDescription CCompositor::getPreferredImageDescription() {
 PImageDescription CCompositor::getHDRImageDescription() {
     if (!PROTO::colorManagement) {
         Log::logger->log(Log::ERR, "FIXME: color management protocol is not enabled, returning empty image description");
-        return DEFAULT_IMAGE_DESCRIPTION;
+        return getDefaultImageDescription();
     }
 
     return m_monitors.size() == 1 && m_monitors[0]->m_output && m_monitors[0]->m_output->parsedEDID.hdrMetadata.has_value() ?
