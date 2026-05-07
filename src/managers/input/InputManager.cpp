@@ -265,31 +265,56 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse, st
         g_pCompositor->scheduleFrameForMonitor(PMONITOR, Aquamarine::IOutput::AQ_SCHEDULE_CURSOR_MOVE);
 
     // constraints
-    if (!overridePos.has_value() && !g_pSeatManager->m_mouse.expired() && isConstrained()) {
-        const auto SURF       = Desktop::View::CWLSurface::fromResource(Desktop::focusState()->surface());
-        const auto CONSTRAINT = SURF ? SURF->constraint() : nullptr;
-
-        if (CONSTRAINT) {
-            if (CONSTRAINT->isLocked()) {
-                const auto HINT = CONSTRAINT->logicPositionHint();
-                g_pCompositor->warpCursorTo(HINT, true);
-            } else {
-                const auto RG           = CONSTRAINT->logicConstraintRegion();
-                const auto CLOSEST      = RG.closestPoint(mouseCoords);
-                const auto BOX          = SURF->getSurfaceBoxGlobal();
-                const auto WINDOW       = Desktop::View::CWindow::fromView(SURF->view());
-                const auto CLOSESTLOCAL = (CLOSEST - (BOX.has_value() ? BOX->pos() : Vector2D{})) * (WINDOW ? WINDOW->m_X11SurfaceScaledBy : 1.0);
-
-                g_pCompositor->warpCursorTo(CLOSEST, true);
-                g_pSeatManager->sendPointerMotion(time, CLOSESTLOCAL);
-                PROTO::relativePointer->sendRelativeMotion(sc<uint64_t>(time) * 1000, {}, {});
-            }
-
+    auto confineToRegion = [&](const CRegion& rg, SP<Desktop::View::CWLSurface> surf) {
+        if (!surf)
             return;
 
-        } else
-            Log::logger->log(Log::ERR, "BUG THIS: Null SURF/CONSTRAINT in mouse refocus. Ignoring constraints. {:x} {:x}", rc<uintptr_t>(SURF.get()),
-                             rc<uintptr_t>(CONSTRAINT.get()));
+        const auto CLOSEST      = rg.closestPoint(mouseCoords);
+        const auto BOX          = surf->getSurfaceBoxGlobal();
+        const auto WINDOW       = Desktop::View::CWindow::fromView(surf->view());
+        const auto CLOSESTLOCAL = (CLOSEST - (BOX.has_value() ? BOX->pos() : Vector2D{})) * (WINDOW ? WINDOW->m_X11SurfaceScaledBy : 1.0);
+
+        if (g_pSeatManager->m_state.pointerFocus != surf->resource())
+            g_pSeatManager->setPointerFocus(surf->resource(), CLOSESTLOCAL);
+
+        g_pCompositor->warpCursorTo(CLOSEST, true);
+        g_pSeatManager->sendPointerMotion(time, CLOSESTLOCAL);
+        PROTO::relativePointer->sendRelativeMotion(sc<uint64_t>(time) * 1000, {}, {});
+    };
+
+    if (!g_pSeatManager->m_mouse.expired()) {
+        const auto SURF = Desktop::View::CWLSurface::fromResource(Desktop::focusState()->surface());
+
+        if (isConstrained()) {
+            const auto CONSTRAINT = SURF ? SURF->constraint() : nullptr;
+
+            if (CONSTRAINT) {
+                if (CONSTRAINT->isLocked()) {
+                    const auto HINT = CONSTRAINT->logicPositionHint();
+                    g_pCompositor->warpCursorTo(HINT, true);
+                } else {
+                    confineToRegion(CONSTRAINT->logicConstraintRegion(), SURF);
+                }
+
+                return;
+            } else {
+                Log::logger->log(Log::ERR, "BUG THIS: Null SURF/CONSTRAINT in mouse refocus. Ignoring constraints. {:x} {:x}", rc<uintptr_t>(SURF.get()),
+                                 rc<uintptr_t>(CONSTRAINT.get()));
+            }
+        } else {
+            const auto WINDOW = SURF ? Desktop::View::CWindow::fromView(SURF->view()) : nullptr;
+            if (WINDOW) {
+                if (WINDOW->m_ruleApplicator->confinePointer().valueOrDefault()) {
+                    const auto BOX = SURF->getSurfaceBoxGlobal();
+                    if (BOX.has_value()) {
+                        CRegion rg;
+                        rg.set(*BOX);
+                        confineToRegion(rg, SURF);
+                    }
+                    return;
+                }
+            }
+        }
     }
 
     if (PMONITOR != Desktop::focusState()->monitor() && (*PMOUSEFOCUSMON || refocus) && m_forcedFocus.expired())
@@ -428,7 +453,9 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse, st
         return pWindowIdeal;
     };
 
-    if (PWORKSPACE->m_hasFullscreenWindow && PWORKSPACE->m_fullscreenMode == FSMODE_FULLSCREEN) {
+    const bool HAS_EXCLUSIVE_FULLSCREEN = (PWORKSPACE->m_hasFullscreenWindow && PWORKSPACE->m_fullscreenMode == FSMODE_FULLSCREEN) || PMONITOR->inFullscreenMode();
+
+    if (HAS_EXCLUSIVE_FULLSCREEN) {
         const auto IS_LS_UNFOCUSABLE = pFoundLayerSurface &&
             (pFoundLayerSurface->m_layer < ZWLR_LAYER_SHELL_V1_LAYER_TOP ||
              (pFoundLayerSurface->m_layer == ZWLR_LAYER_SHELL_V1_LAYER_TOP && !pFoundLayerSurface->m_aboveFullscreen));
@@ -447,7 +474,7 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse, st
 
             const auto& PWINDOWIDEAL = getWindowIdeal();
             if (PWINDOWIDEAL &&
-                ((PWINDOWIDEAL->m_isFloating && (PWINDOWIDEAL->m_createdOverFullscreen || PWINDOWIDEAL->m_pinned)) /* floating over fullscreen or pinned */
+                ((PWINDOWIDEAL->m_isFloating && PWINDOWIDEAL->isAllowedOverFullscreen()) /* floating over fullscreen or pinned */
                  || (PMONITOR->m_activeSpecialWorkspace == PWINDOWIDEAL->m_workspace) /* on an open special workspace */))
                 pFoundWindow = PWINDOWIDEAL;
 
@@ -485,7 +512,7 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse, st
                         if (pFoundWindow != PWINDOWIDEAL)
                             pFoundWindow = PWINDOWIDEAL;
 
-                        if (!(pFoundWindow && (pFoundWindow->m_isFloating && (pFoundWindow->m_createdOverFullscreen || pFoundWindow->m_pinned))))
+                        if (!(pFoundWindow && (pFoundWindow->m_isFloating && pFoundWindow->isAllowedOverFullscreen())))
                             pFoundWindow = PWORKSPACE->getFullscreenWindow();
                     }
                 }
@@ -1147,6 +1174,10 @@ void CInputManager::applyConfigToKeyboard(SP<IKeyboard> pKeyboard) {
     const auto ENABLED    = HASCONFIG && Config::mgr()->deviceConfigExplicitlySet(devname, "enabled") ? Config::mgr()->getDeviceInt(devname, "enabled") : true;
     const auto ALLOWBINDS = HASCONFIG && Config::mgr()->deviceConfigExplicitlySet(devname, "keybinds") ? Config::mgr()->getDeviceInt(devname, "keybinds") : true;
 
+    for (const auto& tagString : CVarList2(Config::mgr()->getDeviceString(devname, "tags"))) {
+        pKeyboard->m_deviceTags.emplace(std::string_view(tagString));
+    }
+
     pKeyboard->m_enabled           = ENABLED;
     pKeyboard->m_resolveBindsBySym = RESOLVEBINDSBYSYM;
     pKeyboard->m_allowBinds        = ALLOWBINDS;
@@ -1272,6 +1303,10 @@ void CInputManager::setPointerConfigs() {
             } else if (!ENABLED && m->m_connected) {
                 g_pPointerManager->detachPointer(m);
                 m->m_connected = false;
+            }
+
+            for (const auto tagString : CVarList2(Config::mgr()->getDeviceString(devname, "tags"))) {
+                m->m_deviceTags.emplace(std::string_view(tagString));
             }
         }
 
@@ -1674,7 +1709,8 @@ bool CInputManager::refocusLastWindow(PHLMONITOR pMonitor) {
             foundSurface = nullptr;
     }
 
-    if (!foundSurface && Desktop::focusState()->window() && Desktop::focusState()->window()->m_workspace && Desktop::focusState()->window()->m_workspace->isVisibleNotCovered()) {
+    if (!foundSurface && Desktop::focusState()->window() && Desktop::focusState()->window()->m_monitor == pMonitor && Desktop::focusState()->window()->m_workspace &&
+        Desktop::focusState()->window()->m_workspace->isVisibleNotCovered()) {
         // then the last focused window if we're on the same workspace as it
         const auto PLASTWINDOW = Desktop::focusState()->window();
         Desktop::focusState()->fullWindowFocus(PLASTWINDOW, Desktop::FOCUS_REASON_FFM);
@@ -1712,7 +1748,17 @@ void CInputManager::unconstrainMouse() {
 bool CInputManager::isConstrained() {
     return std::ranges::any_of(m_constraints, [](auto const& c) {
         const auto constraint = c.lock();
-        return constraint && constraint->isActive() && constraint->owner()->resource() == Desktop::focusState()->surface();
+
+        if (!constraint || !constraint->isActive() || constraint->owner()->resource() != Desktop::focusState()->surface())
+            return false;
+
+        const auto OWNER  = constraint->owner()->view();
+        const auto WINDOW = Desktop::View::CWindow::fromView(OWNER);
+
+        if (!WINDOW)
+            return false;
+
+        return !WINDOW->m_layoutFlags.cantLockCursor;
     });
 }
 
@@ -1720,7 +1766,15 @@ bool CInputManager::isLocked() {
     if (!isConstrained())
         return false;
 
-    const auto SURF       = Desktop::View::CWLSurface::fromResource(Desktop::focusState()->surface());
+    const auto SURF = Desktop::View::CWLSurface::fromResource(Desktop::focusState()->surface());
+
+    if (SURF) {
+        const auto WINDOW = Desktop::View::CWindow::fromView(SURF->view());
+
+        if (WINDOW && WINDOW->m_layoutFlags.cantLockCursor)
+            return false;
+    }
+
     const auto CONSTRAINT = SURF ? SURF->constraint() : nullptr;
 
     return CONSTRAINT && CONSTRAINT->isLocked();

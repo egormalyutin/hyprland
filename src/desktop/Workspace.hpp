@@ -61,6 +61,7 @@ class CWorkspace {
     bool        inert();
     MONITORID   monitorID();
     PHLWINDOW   getLastFocusedWindow();
+    PHLWINDOW   getFocusCandidate();
     std::string getConfigName();
     bool        matchesStaticSelector(const std::string& selector);
     void        markInert();
@@ -79,6 +80,7 @@ class CWorkspace {
     void        updateWindows();
     void        setPersistent(bool persistent);
     bool        isPersistent();
+    void        setNoMembersAboveFullscreen();
 
     struct {
         CSignalT<> destroy;

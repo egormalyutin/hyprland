@@ -94,9 +94,11 @@ void CLayoutManager::endDragTarget() {
     m_dragStateController->dragEnd();
 }
 
-void CLayoutManager::fullscreenRequestForTarget(SP<ITarget> target, eFullscreenMode currentEffectiveMode, eFullscreenMode effectiveMode) {
-    if (target->space())
-        target->space()->setFullscreen(target, effectiveMode);
+eFullscreenRequestResult CLayoutManager::fullscreenRequestForTarget(SP<ITarget> target, eFullscreenMode currentEffectiveMode, eFullscreenMode effectiveMode) {
+    if (target && target->space())
+        return target->space()->setFullscreen(target, currentEffectiveMode, effectiveMode);
+
+    return FULLSCREEN_REQUEST_DEFAULT;
 }
 
 void CLayoutManager::switchTargets(SP<ITarget> a, SP<ITarget> b, bool preserveFocus) {
@@ -217,7 +219,7 @@ void CLayoutManager::performSnap(Vector2D& sourcePos, Vector2D& sourceSize, SP<I
         const double GAPSY  = GAPSIN->m_top + GAPSIN->m_bottom;
 
         for (auto& other : g_pCompositor->m_windows) {
-            if ((HASFULLSCREEN && !other->m_createdOverFullscreen) || other == DRAGGINGWINDOW || other->workspaceID() != WSID || !other->m_isMapped || other->m_fadingOut ||
+            if ((HASFULLSCREEN && !other->isAllowedOverFullscreen()) || other == DRAGGINGWINDOW || other->workspaceID() != WSID || !other->m_isMapped || other->m_fadingOut ||
                 other->isX11OverrideRedirect())
                 continue;
 
