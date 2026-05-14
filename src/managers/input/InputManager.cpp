@@ -176,6 +176,16 @@ void CInputManager::sendMotionEventsToFocused() {
     if (!Desktop::focusState()->surface() || isConstrained())
         return;
 
+    const auto POINTERSURF = g_pSeatManager->m_state.pointerFocus.lock();
+    if (POINTERSURF) {
+        const auto POINTERHLSURF = Desktop::View::CWLSurface::fromResource(POINTERSURF);
+
+        // Keep pointer focus on desktop components such as bars or popups that are
+        // currently under the cursor. Keyboard focus changes should not steal it.
+        if (POINTERHLSURF && (!POINTERHLSURF->view() || POINTERHLSURF->view()->type() != Desktop::View::VIEW_TYPE_WINDOW))
+            return;
+    }
+
     const auto SURF = Desktop::focusState()->surface();
 
     if (!SURF)
@@ -393,7 +403,7 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse, st
                     const auto LS      = Desktop::View::CLayerSurface::fromView(HLSurface->view());
                     surfacePos         = BOX->pos();
 
-                    if (PWINDOW)
+                    if (PWINDOW && PWINDOW->acceptsInput())
                         pFoundWindow = PWINDOW;
                     else if (LS)
                         pFoundLayerSurface = LS;
@@ -1778,6 +1788,10 @@ bool CInputManager::isLocked() {
     const auto CONSTRAINT = SURF ? SURF->constraint() : nullptr;
 
     return CONSTRAINT && CONSTRAINT->isLocked();
+}
+
+bool CInputManager::hasHeldButtons() {
+    return !m_currentlyHeldButtons.empty();
 }
 
 void CInputManager::updateCapabilities() {

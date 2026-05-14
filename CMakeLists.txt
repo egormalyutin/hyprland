@@ -133,7 +133,7 @@ find_package(glslang CONFIG REQUIRED)
 set(AQUAMARINE_MINIMUM_VERSION 0.9.3)
 set(HYPRLANG_MINIMUM_VERSION 0.6.7)
 set(HYPRCURSOR_MINIMUM_VERSION 0.1.7)
-set(HYPRUTILS_MINIMUM_VERSION 0.13.0)
+set(HYPRUTILS_MINIMUM_VERSION 0.13.1)
 set(HYPRGRAPHICS_MINIMUM_VERSION 0.5.1)
 
 pkg_check_modules(aquamarine_dep REQUIRED IMPORTED_TARGET aquamarine>=${AQUAMARINE_MINIMUM_VERSION})
@@ -603,6 +603,12 @@ else()
   add_subdirectory(hyprpm)
   message(STATUS "hyprpm is enabled (NO_HYPRPM not defined)")
 endif()
+
+# Set proper permissions for directories, otherwise they could end up 700
+set(CMAKE_INSTALL_DEFAULT_DIRECTORY_PERMISSIONS
+    OWNER_READ OWNER_WRITE OWNER_EXECUTE
+    GROUP_READ GROUP_EXECUTE
+    WORLD_READ WORLD_EXECUTE)
 
 # binary and symlink
 install(TARGETS Hyprland)

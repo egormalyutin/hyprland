@@ -100,7 +100,7 @@ namespace Layout::Tiled {
         virtual void                     removeTarget(SP<ITarget> target);
 
         virtual void                     resizeTarget(const Vector2D& Δ, SP<ITarget> target, eRectCorner corner = CORNER_NONE);
-        virtual void                     recalculate();
+        virtual void                     recalculate(eRecalculateReason reason = RECALCULATE_REASON_UNKNOWN);
 
         virtual SP<ITarget>              getNextCandidate(SP<ITarget> old);
 
@@ -114,13 +114,27 @@ namespace Layout::Tiled {
         virtual SP<ITarget>              layoutFullscreenTarget() const;
         virtual bool                     layoutFullscreenCoversMonitor() const;
 
+        void                             moveTape(float delta);
+        void                             moveTapeNormalized(double delta);
+        void                             snapToGrid();
+        SP<SColumnData>                  snapToProjectedOffset(double projectedNormalizedOffset);
+        void                             focusColumn(SP<SColumnData> column);
+        SP<SColumnData>                  getColumnAtViewportCenter();
+        SP<SColumnData>                  currentColumn();
+
+        double                           primaryViewportSize();
+        double                           normalizedTapeOffset();
+
         CBox                             usableArea() const;
         SP<SScrollingTargetData>         dataFor(SP<ITarget> t) const;
+
+        void                             inhibitScroll();
+        void                             uninhibitScroll();
 
         enum eInputMode : uint8_t {
             INPUT_MODE_SOFT = 0,
             INPUT_MODE_CLICK,
-            INPUT_MODE_KB
+            INPUT_MODE_HARD
         };
 
       private:

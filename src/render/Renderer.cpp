@@ -2022,7 +2022,7 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
     if (pMonitor->m_scheduledRecalc) {
         pMonitor->m_scheduledRecalc = false;
         if (pMonitor->m_activeWorkspace) // might be missing (mirror)
-            pMonitor->m_activeWorkspace->m_space->recalculate();
+            pMonitor->m_activeWorkspace->m_space->recalculate(Layout::RECALCULATE_REASON_RENDER_MOINTOR);
     }
 
     if (!pMonitor->m_output->needsFrame && pMonitor->m_forceFullFrames == 0)
@@ -2040,18 +2040,8 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
             }
             handleFullscreenSettings(pMonitor);
             return;
-        } else if (!pMonitor->m_lastScanout.expired() || pMonitor->m_directScanoutIsActive) {
-            Log::logger->log(Log::DEBUG, "Left a direct scanout.");
-            pMonitor->m_lastScanout.reset();
-            pMonitor->m_previousFSWindow.reset(); // recalc fs settings
-            pMonitor->m_directScanoutIsActive = false;
-
-            // reset DRM format, but only if needed since it might modeset
-            if (pMonitor->m_output->state->state().drmFormat != pMonitor->m_prevDrmFormat)
-                pMonitor->m_output->state->setFormat(pMonitor->m_prevDrmFormat);
-
-            pMonitor->m_drmFormat = pMonitor->m_prevDrmFormat;
-        }
+        } else if (!pMonitor->m_lastScanout.expired() || pMonitor->m_directScanoutIsActive)
+            pMonitor->handleDSleave();
     }
 
     Event::bus()->m_events.render.pre.emit(pMonitor);
@@ -2327,6 +2317,10 @@ void IHyprRenderer::handleFullscreenSettings(PHLMONITOR pMonitor) {
                 }
             }
         }
+
+        // Do it here instead of disabling the block above to allow hdr -> hdr metadata changes in fullscreen
+        if (!*PAUTOHDR && !pMonitor->m_lastScanout)
+            wantHDR = configuredHDR;
 
         if (!hdrIsHandled) {
             if (pMonitor->inHDR() != wantHDR) {
@@ -3069,6 +3063,7 @@ void IHyprRenderer::makeSnapshot(PHLWINDOW pWindow) {
     const auto PFRAMEBUFFER = ref->m_snapshotFB;
 
     PFRAMEBUFFER->alloc(PMONITOR->m_pixelSize.x, PMONITOR->m_pixelSize.y, DRM_FORMAT_ABGR8888);
+    PFRAMEBUFFER->setImageDescription(PMONITOR->workBufferImageDescription());
 
     beginFullFakeRender(PMONITOR, fakeDamage, PFRAMEBUFFER);
 
@@ -3110,6 +3105,7 @@ void IHyprRenderer::makeSnapshot(PHLLS pLayer) {
     const auto PFRAMEBUFFER = pLayer->m_snapshotFB;
 
     PFRAMEBUFFER->alloc(PMONITOR->m_pixelSize.x, PMONITOR->m_pixelSize.y, DRM_FORMAT_ABGR8888);
+    PFRAMEBUFFER->setImageDescription(PMONITOR->workBufferImageDescription());
 
     beginFullFakeRender(PMONITOR, fakeDamage, PFRAMEBUFFER);
 
@@ -3152,6 +3148,7 @@ void IHyprRenderer::makeSnapshot(WP<Desktop::View::CPopup> popup) {
     const auto PFRAMEBUFFER = popup->m_snapshotFB;
 
     PFRAMEBUFFER->alloc(PMONITOR->m_pixelSize.x, PMONITOR->m_pixelSize.y, DRM_FORMAT_ABGR8888);
+    PFRAMEBUFFER->setImageDescription(PMONITOR->workBufferImageDescription());
 
     beginFullFakeRender(PMONITOR, fakeDamage, PFRAMEBUFFER);
 
@@ -3334,14 +3331,10 @@ void IHyprRenderer::renderSnapshot(WP<Desktop::View::CPopup> popup) {
 }
 
 NColorManagement::PImageDescription IHyprRenderer::workBufferImageDescription() {
-    // TODO
-    // const bool  IS_MONITOR_ICC  = m_renderData.pMonitor->m_imageDescription.valid() && m_renderData.pMonitor->m_imageDescription->value().icc.present;
-    // const auto  sdrEOTF         = NTransferFunction::fromConfig(IS_MONITOR_ICC);
-    // const auto  CHOSEN_SDR_EOTF = sdrEOTF != NTransferFunction::TF_SRGB ? NColorManagement::CM_TRANSFER_FUNCTION_GAMMA22 : NColorManagement::CM_TRANSFER_FUNCTION_SRGB;
+    if (!m_renderData.pMonitor)
+        return LINEAR_IMAGE_DESCRIPTION;
 
-    return m_renderData.pMonitor->useFP16() ?
-        LINEAR_IMAGE_DESCRIPTION :
-        m_renderData.pMonitor->m_imageDescription; //CImageDescription::from(NColorManagement::SImageDescription{.transferFunction = CHOSEN_SDR_EOTF});
+    return m_renderData.pMonitor->workBufferImageDescription();
 }
 
 bool IHyprRenderer::shouldBlur(PHLLS ls) {
@@ -3427,4 +3420,31 @@ SP<ITexture> IHyprRenderer::renderSplash(const std::function<SP<ITexture>(const 
     cairo_surface_destroy(CAIROSURFACE);
     cairo_destroy(CAIRO);
     return tex;
+}
+
+using ColorConversionKey = std::tuple<float, float, float, float, uint64_t>;
+static std::map<ColorConversionKey, CHyprColor> colorConversionCache;
+constexpr const size_t                          MAX_COLOR_CONVERSION_CACHE_SIZE = 4096;
+
+//
+CHyprColor IHyprRenderer::getConvertedColor(const CHyprColor& color) {
+    const auto DESCR = m_renderData.currentFB ? m_renderData.currentFB->imageDescription() : workBufferImageDescription();
+
+    if (!DESCR) {
+        Log::logger->log(Log::ERR, "getConvertedColor: failed to get image description");
+        return color;
+    }
+
+    if (colorConversionCache.size() >= MAX_COLOR_CONVERSION_CACHE_SIZE)
+        colorConversionCache.clear();
+
+    const ColorConversionKey key = {color.r, color.g, color.b, color.a, DESCR->id()};
+
+    if (colorConversionCache.contains(key))
+        return colorConversionCache[key];
+
+    const auto converted      = convertColor(color, DEFAULT_SRGB_IMAGE_DESCRIPTION, DESCR);
+    colorConversionCache[key] = converted;
+
+    return converted;
 }
